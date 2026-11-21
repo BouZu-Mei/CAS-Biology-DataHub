@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   中国科学院生物考研智能百宝箱 — Windows Metro UI × The Lancet 学术视觉系统
+   配色原则 (60-30-10):
+   - 60% 中性画布: #F4F6F9 / #FFFFFF
+   - 30% 结构表面: #E8EEF5 / #E2E8F0 (1px 极细框线)
+   - 10% 学术强调色:
+     * Lancet Deep Navy: #00407A (主品牌/活跃导航/主要操作)
+     * Lancet Teal: #006B77 (联培专项/安全区间/科研特征)
+     * Lancet Crimson: #AD1E24 (淘汰警戒线/高风险提示)
+   ========================================================================== */
+
+@layer base {
+  :root {
+    --font-sans: "Plus Jakarta Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --lancet-navy: #00407A;
+    --lancet-navy-dark: #002B54;
+    --lancet-teal: #006B77;
+    --lancet-crimson: #AD1E24;
+    --lancet-amber: #B45309;
+    --metro-canvas: #F4F6F9;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--metro-canvas);
+    color: #0F172A;
+    margin: 0;
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+/* 等宽数字对齐：确保所有报录比、分数线、名额表格列严格垂直对齐 */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Metro 磁贴按压与悬停微交互（仅动画 transform / opacity，<=200ms） */
+.metro-tile {
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), border-color 160ms ease, background-color 160ms ease;
+}
+
+.metro-tile:active {
+  transform: scale(0.988);
+}
+
+/* 细窄学术风滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #EDF1F7;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metro-tile {
+    transition: none;
+  }
+}
