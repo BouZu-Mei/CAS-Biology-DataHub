@@ -76,6 +76,8 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
     hotCount: 0,
   });
   const [loading, setLoading] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState<number>(0);
 
   useEffect(() => {
     if (initialSearchKeyword) {
@@ -110,6 +112,7 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true);
+      setApiError(null);
       const params = new URLSearchParams();
       params.set('year', String(yearFilter));
       if (searchQuery.trim()) params.set('search', searchQuery.trim());
@@ -123,7 +126,7 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
       params.set('pageSize', String(PAGE_SIZE));
 
       fetch(`/api/risks?${params.toString()}`, { signal: controller.signal })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('risks fetch error'))))
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((data: RisksApiResponse) => {
           setPageItems(data.items);
           setTotalCount(data.totalCount);
@@ -142,6 +145,7 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
         .catch((err) => {
           if (err?.name !== 'AbortError') {
             setPageItems([]);
+            setApiError('分数线数据服务请求失败，请检查服务端状态后点击重试。');
           }
         })
         .finally(() => setLoading(false));
@@ -162,6 +166,7 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
     ratioSort,
     currentPage,
     mockUserScoreInput,
+    reloadTick,
   ]);
 
   const safePage = Math.min(currentPage, totalPages);
@@ -222,6 +227,22 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
           汇总 62 所院系所 2026 / 2025 / 2024 年官方复试总分线与五档难度。
         </p>
       </div>
+
+      {apiError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 border border-[#AD1E24] bg-red-50 px-4 py-3 text-xs text-[#AD1E24]"
+        >
+          <span>{apiError}</span>
+          <button
+            type="button"
+            onClick={() => setReloadTick((n) => n + 1)}
+            className="bg-[#AD1E24] px-3 py-1 font-semibold text-white hover:bg-[#8E161B]"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
 
       {/* 统计概览条 */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

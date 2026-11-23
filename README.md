@@ -43,10 +43,10 @@ git push -u origin main
 
 ## 三、生成公开访问链接（两种零运维方案任选其一）
 
-### 方案 A：使用 Vercel 部署（推荐，内置 `vercel.json` 与 `api/index.ts`）
+### 方案 A：使用 Vercel 部署（推荐，内置 `vercel.json`、`server/vercelApp.ts` 与编译产物 `api/index.mjs`）
 1. 登录 [Vercel](https://vercel.com/) 并使用你的 GitHub 账号授权（允许访问该 Private 仓库）。
 2. 点击 **Add New Project** → 选择你的私有仓库 → 点击 **Import**。
-3. 无需额外修改构建配置（仓库根目录已提供 `vercel.json`，会自动构建前端 `dist/` 并将 `/api/*` 自动路由至 Serverless 服务端）。
+3. 无需额外修改构建配置（仓库根目录已提供 `vercel.json`，会自动运行 `npm run build:vercel` 打包前端 `dist/` 并生成单文件 ESM 服务端函数 `api/index.mjs`，将 `/api/*` 自动路由至 Serverless 服务端）。
 4. 点击 **Deploy**，约 1 分钟即可获得公开访问链接（如 `https://your-app.vercel.app`），也可绑定自定义域名。
 
 ### 方案 B：使用 Render / Railway / 自有容器部署（内置 `render.yaml` 与 `Dockerfile`）

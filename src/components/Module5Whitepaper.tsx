@@ -43,27 +43,32 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
   const [totalDirectionsCount, setTotalDirectionsCount] = useState<number>(241);
   const [contextData, setContextData] = useState<WhitepaperContextResponse | null>(null);
   const [loadingContext, setLoadingContext] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState<number>(0);
 
   // 加载下拉选项列表
   useEffect(() => {
     const controller = new AbortController();
     fetch('/api/directions/options', { signal: controller.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('options fetch error'))))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: { items: DirectionOptionSummary[]; totalCount: number }) => {
         setDirectionOptions(data.items || []);
         setTotalDirectionsCount(data.totalCount || data.items?.length || 241);
       })
-      .catch(() => {
-        // 忽略中断错误
+      .catch((err) => {
+        if (err?.name !== 'AbortError') {
+          setApiError('报考方向列表接口加载失败，请稍后重试。');
+        }
       });
     return () => controller.abort();
-  }, []);
+  }, [reloadTick]);
 
   // 按当前方向与目标分数从服务端获取考纲资源、难度等级与四区间划分
   useEffect(() => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoadingContext(true);
+      setApiError(null);
       const params = new URLSearchParams();
       if (targetPlan.directionId) params.set('directionId', targetPlan.directionId);
       if (Number.isFinite(targetPlan.customGoalScore)) {
@@ -71,12 +76,14 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
       }
 
       fetch(`/api/whitepaper/context?${params.toString()}`, { signal: controller.signal })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('whitepaper context fetch error'))))
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((data: WhitepaperContextResponse) => {
           setContextData(data);
         })
-        .catch(() => {
-          // 忽略中断错误
+        .catch((err) => {
+          if (err?.name !== 'AbortError') {
+            setApiError('考纲与四区间上下文接口加载失败，请确认服务端运行正常后点击重试。');
+          }
         })
         .finally(() => setLoadingContext(false));
     }, 80);
@@ -85,7 +92,7 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [targetPlan.directionId, targetPlan.customGoalScore]);
+  }, [targetPlan.directionId, targetPlan.customGoalScore, reloadTick]);
 
   const filteredDirections = useMemo(() => {
     const q = dirSearchQuery.trim().toLowerCase();
@@ -214,6 +221,22 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
         <div role="status" className="flex items-center gap-2 border border-[#006B77] bg-[#F0F9FA] p-3.5 text-xs font-semibold text-[#006B77]">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           <span>{exportSuccessMessage}</span>
+        </div>
+      )}
+
+      {apiError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 border border-[#AD1E24] bg-red-50 px-4 py-3 text-xs text-[#AD1E24]"
+        >
+          <span>{apiError}</span>
+          <button
+            type="button"
+            onClick={() => setReloadTick((n) => n + 1)}
+            className="bg-[#AD1E24] px-3 py-1 font-semibold text-white hover:bg-[#8E161B]"
+          >
+            重试加载
+          </button>
         </div>
       )}
 

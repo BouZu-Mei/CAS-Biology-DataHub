@@ -48,6 +48,8 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
   const [examSubjects, setExamSubjects] = useState<ExamSubject[]>([]);
   const [instituteOptions, setInstituteOptions] = useState<InstituteOption[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState<number>(0);
 
   useEffect(() => {
     if (initialInstituteFilter !== 'ALL') {
@@ -60,6 +62,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true);
+      setApiError(null);
       const params = new URLSearchParams();
       if (selectedSubjectCodes.length > 0) params.set('subjects', selectedSubjectCodes.join(','));
       params.set('matchMode', matchMode);
@@ -69,7 +72,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
       if (onlyJoint) params.set('onlyJoint', 'true');
 
       fetch(`/api/bidirectional?${params.toString()}`, { signal: controller.signal })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('bidirectional fetch error'))))
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((data: BidirectionalApiResponse) => {
           setDirections(data.directions);
           setTotalDirectionsCount(data.totalDirectionsCount);
@@ -79,6 +82,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
         .catch((err) => {
           if (err?.name !== 'AbortError') {
             setDirections([]);
+            setApiError('双向检索服务请求失败，请检查网络或服务端配置后重试。');
           }
         })
         .finally(() => setLoading(false));
@@ -88,7 +92,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [selectedSubjectCodes, matchMode, instituteId, searchQuery, degreeType, onlyJoint]);
+  }, [selectedSubjectCodes, matchMode, instituteId, searchQuery, degreeType, onlyJoint, reloadTick]);
 
   const toggleSubject = (code: string) => {
     setSelectedSubjectCodes((prev) =>
@@ -141,6 +145,22 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
           覆盖 {instituteOptions.length || 62} 所培养单位共 {totalDirectionsCount} 条统考方向，支持按科目反查院所或按院所查全量方向。
         </p>
       </div>
+
+      {apiError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 border border-[#AD1E24] bg-red-50 px-4 py-3 text-xs text-[#AD1E24]"
+        >
+          <span>{apiError}</span>
+          <button
+            type="button"
+            onClick={() => setReloadTick((n) => n + 1)}
+            className="bg-[#AD1E24] px-3 py-1 font-semibold text-white hover:bg-[#8E161B]"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* 左侧：科目反向筛选控制台 */}

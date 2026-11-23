@@ -96,12 +96,15 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
   const [resultFilterQuery, setResultFilterQuery] = useState('');
   const [quizReport, setQuizReport] = useState<AIDirectionReport | null>(null);
   const [quizSubmitting, setQuizSubmitting] = useState(false);
+  const [treeError, setTreeError] = useState<string | null>(null);
+  const [treeReloadTick, setTreeReloadTick] = useState(0);
 
   // 加载服务端三级树（已剥离匹配规则与关键词语料）
   useEffect(() => {
     const controller = new AbortController();
+    setTreeError(null);
     fetch('/api/explore/tree', { signal: controller.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('tree fetch error'))))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: ExploreTreeResponse) => {
         setTree(data.tree);
         if (data.corpusStats) setCorpusStats(data.corpusStats);
@@ -114,11 +117,13 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
           setLevel3Id((prev) => prev || d3?.id || '');
         }
       })
-      .catch(() => {
-        // 忽略中断错误
+      .catch((err) => {
+        if (err?.name !== 'AbortError') {
+          setTreeError('三级研究方向图谱接口加载失败，请确认服务端运行正常后点击重试。');
+        }
       });
     return () => controller.abort();
-  }, []);
+  }, [treeReloadTick]);
 
   const activeLevel1 = useMemo(
     () => tree.find((d) => d.id === level1Id) ?? tree[0] ?? null,
@@ -421,7 +426,21 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
          ================================================================= */}
       {workspace === 'quiz' && (
         <div className="space-y-5">
-          {!activeLevel1 || !activeLevel2 || !activeLevel3 ? (
+          {treeError ? (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center justify-between gap-3 border border-[#AD1E24] bg-red-50 px-4 py-4 text-xs text-[#AD1E24]"
+            >
+              <span>{treeError}</span>
+              <button
+                type="button"
+                onClick={() => setTreeReloadTick((n) => n + 1)}
+                className="bg-[#AD1E24] px-3 py-1.5 font-semibold text-white hover:bg-[#8E161B]"
+              >
+                重试加载
+              </button>
+            </div>
+          ) : !activeLevel1 || !activeLevel2 || !activeLevel3 ? (
             <div className="border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
               正在加载生物学三级研究方向图谱...
             </div>

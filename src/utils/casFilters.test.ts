@@ -622,8 +622,29 @@ test('Frontend isolation: client entry, components, and pdfWhitepaper never impo
     assert.equal(leaked, null, `Client file ${relPath} must not import dataset or algorithm: ${leaked?.[0]}`);
   }
 
-  for (const deployFile of ['api/index.ts', 'vercel.json', 'Dockerfile', 'render.yaml', 'README.md']) {
+  for (const deployFile of ['api/index.mjs', 'server/vercelApp.ts', 'vercel.json', 'Dockerfile', 'render.yaml', 'README.md']) {
     assert.ok(fs.existsSync(path.resolve(process.cwd(), deployFile)), `Missing deployment file: ${deployFile}`);
   }
 });
+
+test('Vercel URL rewrite normalizer preserves nested /api paths and query params', async () => {
+  const { normalizeVercelApiUrl } = await import('../../server/vercelApp');
+  assert.equal(
+    normalizeVercelApiUrl('/api/institutes?region=ALL&difficulty=Extreme'),
+    '/api/institutes?region=ALL&difficulty=Extreme'
+  );
+  assert.equal(
+    normalizeVercelApiUrl('/api/index.mjs?__vpath=institutes&region=ALL&difficulty=Extreme'),
+    '/api/institutes?region=ALL&difficulty=Extreme'
+  );
+  assert.equal(
+    normalizeVercelApiUrl('/api/index.mjs?__vpath=explore%2Ftree'),
+    '/api/explore/tree'
+  );
+  assert.equal(
+    normalizeVercelApiUrl('/risks?year=2026&page=1'),
+    '/api/risks?year=2026&page=1'
+  );
+});
+
 

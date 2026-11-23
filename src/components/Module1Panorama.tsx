@@ -61,6 +61,8 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
   const [regionCountsMap, setRegionCountsMap] = useState<Record<string, number>>({});
   const [tierCountsMap, setTierCountsMap] = useState<Record<string, number>>({});
   const [loadingInstitutes, setLoadingInstitutes] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState<number>(0);
   const [selectedInstitute, setSelectedInstitute] = useState<CasInstitute | null>(null);
 
   // 联培雷达筛选状态
@@ -75,13 +77,14 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoadingInstitutes(true);
+      setApiError(null);
       const params = new URLSearchParams();
       if (searchQuery.trim()) params.set('search', searchQuery.trim());
       if (regionFilter !== 'ALL') params.set('region', regionFilter);
       if (difficultyFilter !== 'ALL') params.set('difficulty', difficultyFilter);
 
       fetch(`/api/institutes?${params.toString()}`, { signal: controller.signal })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('institutes fetch error'))))
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((data: InstitutesApiResponse) => {
           setInstitutes(data.items);
           setTotalInstitutes(data.totalInstitutes);
@@ -96,6 +99,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
         .catch((err) => {
           if (err?.name !== 'AbortError') {
             setInstitutes([]);
+            setApiError('院所档案接口连接失败，请确认服务端运行正常后点击重试。');
           }
         })
         .finally(() => setLoadingInstitutes(false));
@@ -105,7 +109,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [searchQuery, regionFilter, difficultyFilter]);
+  }, [searchQuery, regionFilter, difficultyFilter, reloadTick]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -116,7 +120,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
       if (programCategory !== 'ALL') params.set('category', programCategory);
 
       fetch(`/api/joint-programs?${params.toString()}`, { signal: controller.signal })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('joint fetch error'))))
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((data: JointProgramsApiResponse) => {
           setJointPrograms(data.items);
           setTotalJointCount(data.totalJointCount);
@@ -129,6 +133,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
         .catch((err) => {
           if (err?.name !== 'AbortError') {
             setJointPrograms([]);
+            setApiError('联培专项接口连接失败，请稍后重试。');
           }
         })
         .finally(() => setLoadingJoints(false));
@@ -138,7 +143,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [partnerKeyword, programCategory]);
+  }, [partnerKeyword, programCategory, reloadTick]);
 
   const activeInstitute = useMemo(
     () => institutes.find((i) => i.id === selectedInstitute?.id) ?? institutes[0] ?? null,
@@ -202,6 +207,22 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
           </button>
         </div>
       </div>
+
+      {apiError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 border border-[#AD1E24] bg-red-50 px-4 py-3 text-xs text-[#AD1E24]"
+        >
+          <span>{apiError}</span>
+          <button
+            type="button"
+            onClick={() => setReloadTick((n) => n + 1)}
+            className="bg-[#AD1E24] px-3 py-1 font-semibold text-white hover:bg-[#8E161B]"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
 
       {/* =================================================================
           视图 A：院所基础档案
