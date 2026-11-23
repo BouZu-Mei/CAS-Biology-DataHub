@@ -1,11 +1,10 @@
 /**
  * @file Module3RiskDashboard.tsx
  * @description 模块三：2026-2025-2024 三年度统考招生与官方分数线看板
- * 严格遵循有效实证口径：已自动剔除缺失率超过 70% 的字段（进入复试人数、录取人数、复试录取比、初试最低/中位/最高分），
- * 仅展示高覆盖率真实公开项，支持按年份、区域、五档报考难度及“输入分数定位区间 1/2/3/4”多维检索。
+ * 所有 714 条分数线数据与四区间算法均在服务端 /api/risks 中执行，前端仅展示分页结果与区间视图。
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDownWideNarrow,
@@ -17,34 +16,39 @@ import {
   RotateCcw,
   Search,
 } from 'lucide-react';
-import { CAS_INSTITUTES } from '../data/casInstitutes';
-import { ADMISSION_RISK_RECORDS } from '../data/casSubjectsAndAdmissions';
-import { AdmissionRiskRecord, InstituteDifficultyTier, RegionZone } from '../types/cas';
 import {
-  calculateScoreSafetyMetrics,
-  evaluateScoreAgainstZones,
   INSTITUTE_DIFFICULTY_META,
   INSTITUTE_DIFFICULTY_TIERS,
-  SortDirection,
-  sortAndFilterRiskRecords,
-} from '../utils/casFilters';
+  REGION_OPTIONS,
+} from '../constants/uiMeta';
+import {
+  InstituteDifficultyTier,
+  RegionZone,
+  RiskRecordPageItem,
+} from '../types/cas';
 
 interface Module3RiskDashboardProps {
   initialSearchKeyword: string;
 }
 
+type SortDirection = 'asc' | 'desc' | 'none';
+
+interface RisksApiResponse {
+  items: RiskRecordPageItem[];
+  totalCount: number;
+  totalPages: number;
+  currentPage: number;
+  summaryStats: {
+    total: number;
+    withThreshold: number;
+    withRatio: number;
+    hotCount: number;
+  };
+  totalRecordsCount: number;
+}
+
 const NO_DATA_LABEL = '暂无数据';
 const PAGE_SIZE = 30;
-
-const REGION_OPTIONS: RegionZone[] = [
-  RegionZone.BEIJING,
-  RegionZone.SHANGHAI,
-  RegionZone.GUANGSHEN,
-  RegionZone.EAST_CENTRAL,
-  RegionZone.WEST_NORTHEAST,
-];
-
-const INSTITUTE_BY_ID = new Map(CAS_INSTITUTES.map((inst) => [inst.id, inst]));
 
 export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
   initialSearchKeyword,
@@ -62,7 +66,18 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
     'PASSED'
   );
 
-  React.useEffect(() => {
+  const [pageItems, setPageItems] = useState<RiskRecordPageItem[]>([]);
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(1);
+  const [summaryStats, setSummaryStats] = useState({
+    total: 0,
+    withThreshold: 0,
+    withRatio: 0,
+    hotCount: 0,
+  });
+  const [loading, setLoading] = useState<boolean>(true);
+
+  useEffect(() => {
     if (initialSearchKeyword) {
       setSearchQuery(initialSearchKeyword);
       setYearFilter('ALL');
@@ -78,67 +93,78 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
     return n;
   }, [mockUserScoreInput]);
 
-  const rows = useMemo(
-    () =>
-      sortAndFilterRiskRecords(ADMISSION_RISK_RECORDS, {
-        year: yearFilter,
-        searchQuery,
-        regionFilter,
-        difficultyFilter,
-        targetScore: parsedUserScore,
-        targetZone: targetZoneFilter,
-        thresholdSort,
-        ratioSort,
-      }),
-    [
-      yearFilter,
-      searchQuery,
-      regionFilter,
-      difficultyFilter,
-      parsedUserScore,
-      targetZoneFilter,
-      thresholdSort,
-      ratioSort,
-    ]
-  );
-
-  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const safePage = Math.min(currentPage, totalPages);
-  const pagedRows = useMemo(() => {
-    const start = (safePage - 1) * PAGE_SIZE;
-    return rows.slice(start, start + PAGE_SIZE);
-  }, [rows, safePage]);
-
-  React.useEffect(() => {
+  useEffect(() => {
     setCurrentPage(1);
-  }, [yearFilter, searchQuery, regionFilter, difficultyFilter, parsedUserScore, targetZoneFilter, thresholdSort, ratioSort]);
+  }, [
+    yearFilter,
+    searchQuery,
+    regionFilter,
+    difficultyFilter,
+    parsedUserScore,
+    targetZoneFilter,
+    thresholdSort,
+    ratioSort,
+  ]);
 
-  React.useEffect(() => {
-    if (pagedRows.length > 0 && !pagedRows.some((r) => r.id === expandedRowId)) {
-      setExpandedRowId(pagedRows[0].id);
-    }
-  }, [pagedRows, expandedRowId]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      const params = new URLSearchParams();
+      params.set('year', String(yearFilter));
+      if (searchQuery.trim()) params.set('search', searchQuery.trim());
+      if (regionFilter !== 'ALL') params.set('region', regionFilter);
+      if (difficultyFilter !== 'ALL') params.set('difficulty', difficultyFilter);
+      if (parsedUserScore !== null) params.set('targetScore', String(parsedUserScore));
+      params.set('targetZone', String(targetZoneFilter));
+      params.set('thresholdSort', thresholdSort);
+      params.set('ratioSort', ratioSort);
+      params.set('page', String(currentPage));
+      params.set('pageSize', String(PAGE_SIZE));
 
-  const summaryStats = useMemo(() => {
-    const withThreshold = rows.filter((r) => r.prelimThreshold !== null).length;
-    const withRatio = rows.filter(
-      (r) =>
-        r.applicationRatio !== null ||
-        r.reexamCount !== null ||
-        r.admittedCount !== null ||
-        (r.reexamRatioLabel && r.reexamRatioLabel !== NO_DATA_LABEL)
-    ).length;
-    const hotCount = rows.filter((r) => {
-      const tier = INSTITUTE_BY_ID.get(r.instituteId)?.difficultyTier ?? calculateScoreSafetyMetrics(r).zoneTier;
-      return tier === 'Extreme' || tier === 'Ultra';
-    }).length;
-    return {
-      total: rows.length,
-      withThreshold,
-      withRatio,
-      hotCount,
+      fetch(`/api/risks?${params.toString()}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('risks fetch error'))))
+        .then((data: RisksApiResponse) => {
+          setPageItems(data.items);
+          setTotalCount(data.totalCount);
+          setTotalPages(data.totalPages);
+          setSummaryStats(data.summaryStats);
+          if (data.items.length > 0) {
+            setExpandedRowId((prev) =>
+              prev && data.items.some((it) => it.record.id === prev)
+                ? prev
+                : data.items[0].record.id
+            );
+          } else {
+            setExpandedRowId(null);
+          }
+        })
+        .catch((err) => {
+          if (err?.name !== 'AbortError') {
+            setPageItems([]);
+          }
+        })
+        .finally(() => setLoading(false));
+    }, searchQuery || mockUserScoreInput ? 120 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
     };
-  }, [rows]);
+  }, [
+    yearFilter,
+    searchQuery,
+    regionFilter,
+    difficultyFilter,
+    parsedUserScore,
+    targetZoneFilter,
+    thresholdSort,
+    ratioSort,
+    currentPage,
+    mockUserScoreInput,
+  ]);
+
+  const safePage = Math.min(currentPage, totalPages);
 
   const cycleThresholdSort = () => {
     setRatioSort('none');
@@ -159,9 +185,8 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
     setTargetZoneFilter('PASSED');
   };
 
-  const renderDifficultyTag = (record: AdmissionRiskRecord) => {
-    const metrics = calculateScoreSafetyMetrics(record);
-    if (metrics.prelimThreshold === null) {
+  const renderDifficultyTag = (item: RiskRecordPageItem) => {
+    if (item.metrics.prelimThreshold === null) {
       return (
         <span className="inline-flex items-center gap-1 font-medium text-slate-400">
           <Info className="h-3.5 w-3.5 shrink-0" />
@@ -169,7 +194,7 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
         </span>
       );
     }
-    const tier = metrics.zoneTier;
+    const tier = item.metrics.zoneTier;
     const meta = INSTITUTE_DIFFICULTY_META[tier];
     return (
       <span
@@ -229,7 +254,6 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
 
       {/* 工具栏：搜索 + 年份 + 区域 + 难度 + 排序 + 分数区间定位反查 */}
       <div className="border border-slate-200 bg-white p-4 space-y-3">
-        {/* 第一行：关键词 + 年份 + 升/降序 */}
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-1 flex-wrap items-center gap-3">
             <div className="relative min-w-[240px] flex-1 max-w-md">
@@ -387,7 +411,7 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
             />
             {parsedUserScore !== null && (
               <span className="font-mono text-[11px] font-semibold text-[#006B77]">
-                当前按 {parsedUserScore} 分筛选命中 {rows.length} 条
+                当前按 {parsedUserScore} 分筛选命中 {totalCount} 条
               </span>
             )}
           </div>
@@ -427,7 +451,11 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
 
       {/* 多维数据表 */}
       <div className="border border-slate-200 bg-white overflow-hidden">
-        {rows.length === 0 ? (
+        {loading && pageItems.length === 0 ? (
+          <div className="p-10 text-center text-sm text-slate-500">
+            正在加载分数线与四区间定位数据...
+          </div>
+        ) : pageItems.length === 0 ? (
           <div className="p-10 text-center">
             <p className="text-sm text-slate-700">
               未匹配到符合当前年份、区域、难度或输入分数区间条件的院所与专业记录。
@@ -480,19 +508,16 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {pagedRows.map((rec) => {
+                  {pageItems.map((item) => {
+                    const rec = item.record;
+                    const metrics = item.metrics;
+                    const evalResult = item.scoreEval;
                     const isExpanded = expandedRowId === rec.id;
-                    const inst = INSTITUTE_BY_ID.get(rec.instituteId);
-                    const metrics = calculateScoreSafetyMetrics(rec);
                     const axisMin = metrics.axisMin;
                     const axisMax = metrics.axisMax;
                     const span = Math.max(1, axisMax - axisMin);
                     const pct = (val: number) =>
                       Math.min(100, Math.max(0, ((val - axisMin) / span) * 100));
-                    const evalResult =
-                      parsedUserScore !== null
-                        ? evaluateScoreAgainstZones(parsedUserScore, metrics)
-                        : null;
 
                     return (
                       <React.Fragment key={rec.id}>
@@ -524,8 +549,8 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
                           <td className="py-3 px-3">
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-slate-900">{rec.instituteName}</span>
-                              {inst && (
-                                <span className="text-[10px] text-slate-500">{inst.region}</span>
+                              {item.region && (
+                                <span className="text-[10px] text-slate-500">{item.region}</span>
                               )}
                             </div>
                             <div className="mt-0.5 text-[11px] text-slate-500">
@@ -564,7 +589,7 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
                           <td className="py-3 px-3 text-slate-600 truncate max-w-[210px]" title={rec.singleLineNote}>
                             {rec.singleLineNote || NO_DATA_LABEL}
                           </td>
-                          <td className="py-3 pl-2 pr-4 whitespace-nowrap">{renderDifficultyTag(rec)}</td>
+                          <td className="py-3 pl-2 pr-4 whitespace-nowrap">{renderDifficultyTag(item)}</td>
                         </tr>
 
                         {isExpanded && (
@@ -681,7 +706,6 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
                                       )}
                                     </div>
 
-                                    {/* 公开线之上 4 区间起始线明细卡片 */}
                                     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4 text-xs">
                                       {metrics.scoreZones.map((zone) => {
                                         const isCurrentZone =
@@ -761,8 +785,8 @@ export const Module3RiskDashboard: React.FC<Module3RiskDashboardProps> = ({
             {/* 分页控制栏 */}
             <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 text-xs sm:flex-row sm:items-center sm:justify-between">
               <div className="text-slate-600 font-mono tabular-nums">
-                显示第 {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, rows.length)} 条，共{' '}
-                {rows.length} 条记录（第 {safePage} / {totalPages} 页）
+                显示第 {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, totalCount)} 条，共{' '}
+                {totalCount} 条记录（第 {safePage} / {totalPages} 页）
               </div>
               <div className="flex items-center gap-2">
                 <button

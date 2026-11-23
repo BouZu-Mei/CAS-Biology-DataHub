@@ -20,8 +20,13 @@ import {
   JointProgram,
   RegionZone,
   ResearchQuizAnswers,
+  ScoreEvaluationResult,
+  ScoreSafetyMetrics,
+  ScoreZone,
   SubSpecialtyNode,
 } from '../types/cas';
+
+export type { ScoreZone, ScoreSafetyMetrics, ScoreEvaluationResult };
 
 export type SortDirection = 'asc' | 'desc' | 'none';
 
@@ -125,32 +130,6 @@ export function computeZoneBoundaries(
   const z2Start = z1Start + w1;
   const z3Start = z2Start + w2;
   return { z1Start, z2Start, z3Start, z4Start };
-}
-
-export interface ScoreZone {
-  zoneIndex: 1 | 2 | 3 | 4;
-  label: string;
-  startScore: number;
-  endScore: number | null;
-  isDanger: boolean;
-  barClass: string;
-  textClass: string;
-  description: string;
-}
-
-export interface ScoreSafetyMetrics {
-  prelimThreshold: number | null;
-  admittedMin: number | null;
-  admittedMedian: number | null;
-  admittedMax: number | null;
-  safeMarginOverThreshold: number | null;
-  recommendedSafeTarget: number | null;
-  hasScoreRange: boolean;
-  riskLevel: InstituteDifficultyTier | '暂无数据';
-  zoneTier: InstituteDifficultyTier;
-  scoreZones: ScoreZone[];
-  axisMin: number;
-  axisMax: number;
 }
 
 /**
@@ -556,12 +535,7 @@ export function calculateScoreSafetyMetrics(record: AdmissionRiskRecord): ScoreS
 export function evaluateScoreAgainstZones(
   score: number,
   metrics: ScoreSafetyMetrics
-): {
-  status: 'below' | 'zone1' | 'zone2' | 'zone3' | 'zone4';
-  label: string;
-  detail: string;
-  textClass: string;
-} | null {
+): ScoreEvaluationResult | null {
   if (metrics.prelimThreshold === null || metrics.scoreZones.length !== 4) {
     return null;
   }

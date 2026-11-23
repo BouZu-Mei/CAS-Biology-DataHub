@@ -1,11 +1,10 @@
 /**
  * @file Module4AIAdvisorHub.tsx
  * @description 模块四：三级级联理想方向探索、全库关键词查方向与 62 所生物导师名录中心
- * 1. 基于内置全量三级学科图谱与 3,089 位导师方向语料库匹配，按相关度从高到低排序精选 10-20 个官方招生方向。
- * 2. 工作区 1（三级级联同屏看板）：生物学领域 -> 研究方向 -> 细分小方向，关联全部 62 所 × 241 条官方招生方向，
- *    止步于【报考院系所 -> 报考专业代码及名称 -> 官方招生方向】。
- * 3. 工作区 2（兴趣关键词查方向）：需先完成三级探索后解锁，检索全库 62 所 × 241 条官方招生方向（按相关度精选前 20 条）。
- * 4. 工作区 3（62 所生物导师名录）：纯客观目录查询，支持按研究所切换与分页检索。
+ * 1. 全量三级匹配规则、3,089 位导师方向语料与名录均仅驻留服务端，前端通过 /api/explore/* 与 /api/advisors/* 按需请求。
+ * 2. 工作区 1（三级级联同屏看板）：生物学领域 -> 研究方向 -> 细分小方向，按相关度排序精选 10-20 个官方方向。
+ * 3. 工作区 2（兴趣关键词查方向）：需先完成三级探索后解锁。
+ * 4. 工作区 3（62 所生物导师名录）：纯客观分页名录查询。
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -26,23 +25,13 @@ import {
   Target,
   Users,
 } from 'lucide-react';
-import { CAS_ADVISORS } from '../data/casAdvisors';
-import { CAS_INSTITUTES } from '../data/casInstitutes';
-import { RESEARCH_EXPLORATION_TREE } from '../data/casResearchTree';
 import {
   AIAdvisorDeepProfile,
   AIAdvisorMatchResponse,
   AIDirectionReport,
   CasAdvisor,
-  ResearchQuizAnswers,
+  PublicBiologyDomainNode,
 } from '../types/cas';
-import {
-  countCorpusMatchesForNode,
-  filterAndPaginateAdvisors,
-  generateLocalDirectionReport,
-  getAdvisorCorpusStats,
-  matchTeamsLocally,
-} from '../utils/casFilters';
 
 interface Module4AIAdvisorHubProps {
   directionQuizCompleted: boolean;
@@ -59,6 +48,26 @@ interface Module4AIAdvisorHubProps {
   onSaveAiSummaryForWhitepaper: (summary: string) => void;
 }
 
+interface ExploreTreeResponse {
+  tree: PublicBiologyDomainNode[];
+  corpusStats: {
+    totalAdvisorsAnalyzed: number;
+    uniqueTopicsCount: number;
+  };
+}
+
+interface AdvisorsMetaResponse {
+  totalAdvisors: number;
+  instituteCounts: { id: string; name: string; count: number }[];
+}
+
+interface AdvisorsPageResponse {
+  items: CasAdvisor[];
+  totalCount: number;
+  totalPages: number;
+  currentPage: number;
+}
+
 const DIRECTORY_PAGE_SIZE = 18;
 
 export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
@@ -73,77 +82,132 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
   const [workspace, setWorkspace] = useState<'quiz' | 'keyword' | 'directory'>('quiz');
 
   // === 工作区 1：三级级联同屏看板（L1 领域 -> L2 研究方向 -> L3 细分小方向） ===
-  const [level1Id, setLevel1Id] = useState<string>(RESEARCH_EXPLORATION_TREE[0].id);
-  const [level2Id, setLevel2Id] = useState<string>(
-    RESEARCH_EXPLORATION_TREE[0].directions[0].id
-  );
-  const [level3Id, setLevel3Id] = useState<string>(
-    RESEARCH_EXPLORATION_TREE[0].directions[0].subSpecialties[0].id
-  );
-
-  const activeLevel1 = useMemo(
-    () => RESEARCH_EXPLORATION_TREE.find((d) => d.id === level1Id) ?? RESEARCH_EXPLORATION_TREE[0],
-    [level1Id]
-  );
-  const activeLevel2 = useMemo(
-    () => activeLevel1.directions.find((d) => d.id === level2Id) ?? activeLevel1.directions[0],
-    [activeLevel1, level2Id]
-  );
-  const activeLevel3 = useMemo(
-    () =>
-      activeLevel2.subSpecialties.find((s) => s.id === level3Id) ??
-      activeLevel2.subSpecialties[0],
-    [activeLevel2, level3Id]
-  );
+  const [tree, setTree] = useState<PublicBiologyDomainNode[]>([]);
+  const [corpusStats, setCorpusStats] = useState({
+    totalAdvisorsAnalyzed: 3089,
+    uniqueTopicsCount: 0,
+  });
+  const [level1Id, setLevel1Id] = useState<string>('');
+  const [level2Id, setLevel2Id] = useState<string>('');
+  const [level3Id, setLevel3Id] = useState<string>('');
+  const [matchingAdvisorCount, setMatchingAdvisorCount] = useState<number>(0);
 
   const [extraNotes, setExtraNotes] = useState('');
   const [resultFilterQuery, setResultFilterQuery] = useState('');
   const [quizReport, setQuizReport] = useState<AIDirectionReport | null>(null);
+  const [quizSubmitting, setQuizSubmitting] = useState(false);
+
+  // 加载服务端三级树（已剥离匹配规则与关键词语料）
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/explore/tree', { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('tree fetch error'))))
+      .then((data: ExploreTreeResponse) => {
+        setTree(data.tree);
+        if (data.corpusStats) setCorpusStats(data.corpusStats);
+        if (data.tree.length > 0) {
+          const d1 = data.tree[0];
+          const d2 = d1.directions[0];
+          const d3 = d2?.subSpecialties[0];
+          setLevel1Id((prev) => prev || d1.id);
+          setLevel2Id((prev) => prev || d2?.id || '');
+          setLevel3Id((prev) => prev || d3?.id || '');
+        }
+      })
+      .catch(() => {
+        // 忽略中断错误
+      });
+    return () => controller.abort();
+  }, []);
+
+  const activeLevel1 = useMemo(
+    () => tree.find((d) => d.id === level1Id) ?? tree[0] ?? null,
+    [tree, level1Id]
+  );
+  const activeLevel2 = useMemo(
+    () =>
+      activeLevel1?.directions.find((d) => d.id === level2Id) ??
+      activeLevel1?.directions[0] ??
+      null,
+    [activeLevel1, level2Id]
+  );
+  const activeLevel3 = useMemo(
+    () =>
+      activeLevel2?.subSpecialties.find((s) => s.id === level3Id) ??
+      activeLevel2?.subSpecialties[0] ??
+      null,
+    [activeLevel2, level3Id]
+  );
+
+  // 查询当前选中细分方向匹配的导师方向语料数量
+  useEffect(() => {
+    if (!activeLevel3?.id) return;
+    const controller = new AbortController();
+    fetch(`/api/explore/corpus-count?subId=${encodeURIComponent(activeLevel3.id)}`, {
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { matchingAdvisorCount: number } | null) => {
+        if (data) setMatchingAdvisorCount(data.matchingAdvisorCount);
+      })
+      .catch(() => {
+        // 忽略中断错误
+      });
+    return () => controller.abort();
+  }, [activeLevel3?.id]);
 
   const handleSelectLevel1 = (id: string) => {
-    const dom = RESEARCH_EXPLORATION_TREE.find((d) => d.id === id);
+    const dom = tree.find((d) => d.id === id);
     if (!dom) return;
     const d2 = dom.directions[0];
-    const d3 = d2.subSpecialties[0];
+    const d3 = d2?.subSpecialties[0];
     setLevel1Id(dom.id);
-    setLevel2Id(d2.id);
-    setLevel3Id(d3.id);
+    setLevel2Id(d2?.id ?? '');
+    setLevel3Id(d3?.id ?? '');
     setQuizReport(null);
   };
 
   const handleSelectLevel2 = (id: string) => {
+    if (!activeLevel1) return;
     const d2 = activeLevel1.directions.find((d) => d.id === id);
     if (!d2) return;
     const d3 = d2.subSpecialties[0];
     setLevel2Id(d2.id);
-    setLevel3Id(d3.id);
+    setLevel3Id(d3?.id ?? '');
     setQuizReport(null);
   };
 
   const handleSelectLevel3 = (id: string) => {
+    if (!activeLevel2) return;
     const d3 = activeLevel2.subSpecialties.find((s) => s.id === id);
     if (!d3) return;
     setLevel3Id(d3.id);
     setQuizReport(null);
   };
 
-  const handleRunDirectionQuiz = (e: React.FormEvent) => {
+  const handleRunDirectionQuiz = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!activeLevel1 || !activeLevel2 || !activeLevel3) return;
     setResultFilterQuery('');
-
-    const answers: ResearchQuizAnswers = {
-      level1DomainId: activeLevel1.id,
-      level1Domain: activeLevel1.name,
-      level2DirectionId: activeLevel2.id,
-      level2Direction: activeLevel2.name,
-      level3SubSpecialtyId: activeLevel3.id,
-      level3SubSpecialty: activeLevel3.name,
-      extraNotes,
-    };
-
-    const report = generateLocalDirectionReport(answers);
-    setQuizReport(report);
-    onCompleteDirectionQuiz(`三级方向探索（${activeLevel3.name}）：${report.headline}`);
+    setQuizSubmitting(true);
+    try {
+      const resp = await fetch('/api/explore/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          level1DomainId: activeLevel1.id,
+          level2DirectionId: activeLevel2.id,
+          level3SubSpecialtyId: activeLevel3.id,
+          extraNotes,
+        }),
+      });
+      if (!resp.ok) throw new Error('recommend error');
+      const report = (await resp.json()) as AIDirectionReport;
+      setQuizReport(report);
+      onCompleteDirectionQuiz(`三级方向探索（${activeLevel3.name}）：${report.headline}`);
+    } finally {
+      setQuizSubmitting(false);
+    }
   };
 
   const filteredRecommendedDirections = useMemo(() => {
@@ -165,18 +229,13 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
     );
   }, [quizReport, resultFilterQuery]);
 
-  const corpusStats = useMemo(() => getAdvisorCorpusStats(), []);
-  const activeNodeCorpus = useMemo(
-    () => countCorpusMatchesForNode(activeLevel3),
-    [activeLevel3]
-  );
-
   // === 工作区 2：兴趣关键词查全库招生方向（需先完成三级探索后解锁） ===
   const [teamKeyword, setTeamKeyword] = useState('');
   const [teamMatchError, setTeamMatchError] = useState<string | null>(null);
   const [teamMatchResult, setTeamMatchResult] = useState<AIAdvisorMatchResponse | null>(null);
+  const [teamMatchLoading, setTeamMatchLoading] = useState(false);
 
-  const handleRunTeamMatch = (e?: React.FormEvent) => {
+  const handleRunTeamMatch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!directionQuizCompleted) return;
     const query = teamKeyword.trim();
@@ -185,43 +244,94 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
       return;
     }
     setTeamMatchError(null);
-    setTeamMatchResult(matchTeamsLocally(query));
+    setTeamMatchLoading(true);
+    try {
+      const resp = await fetch('/api/explore/match-keyword', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keyword: query,
+          quizCompleted: directionQuizCompleted,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setTeamMatchError(data?.error || '检索请求失败，请重试。');
+        return;
+      }
+      setTeamMatchResult(data as AIAdvisorMatchResponse);
+    } catch {
+      setTeamMatchError('网络连接异常，请稍后重试。');
+    } finally {
+      setTeamMatchLoading(false);
+    }
   };
 
-  // === 工作区 3：62 所生物导师名录（按研究所分页检索，纯客观名录查询） ===
-  const instituteCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const adv of CAS_ADVISORS) {
-      map.set(adv.instituteId, (map.get(adv.instituteId) ?? 0) + 1);
-    }
-    return map;
-  }, []);
-
+  // === 工作区 3：62 所生物导师名录（服务端分页检索，纯客观名录查询） ===
+  const [totalAdvisors, setTotalAdvisors] = useState<number>(3089);
+  const [instituteCounts, setInstituteCounts] = useState<{ id: string; name: string; count: number }[]>([]);
   const [dirInstituteId, setDirInstituteId] = useState<string>('ioz');
   const [dirSearchQuery, setDirSearchQuery] = useState<string>('');
   const [dirDegreeLevel, setDirDegreeLevel] = useState<'ALL' | '硕士' | '博士'>('ALL');
   const [dirPage, setDirPage] = useState<number>(1);
-  const [selectedAdvisorObj, setSelectedAdvisorObj] = useState<CasAdvisor | null>(
-    () => CAS_ADVISORS.find((a) => a.instituteId === 'ioz') ?? CAS_ADVISORS[0] ?? null
-  );
-
+  const [paginatedDirectory, setPaginatedDirectory] = useState<AdvisorsPageResponse>({
+    items: [],
+    totalCount: 0,
+    totalPages: 1,
+    currentPage: 1,
+  });
+  const [selectedAdvisorObj, setSelectedAdvisorObj] = useState<CasAdvisor | null>(null);
   const [deepProfile, setDeepProfile] = useState<AIAdvisorDeepProfile | null>(null);
 
-  const paginatedDirectory = useMemo(
-    () =>
-      filterAndPaginateAdvisors(CAS_ADVISORS, {
-        instituteId: dirInstituteId,
-        searchQuery: dirSearchQuery,
-        degreeLevel: dirDegreeLevel,
-        page: dirPage,
-        pageSize: DIRECTORY_PAGE_SIZE,
-      }),
-    [dirInstituteId, dirSearchQuery, dirDegreeLevel, dirPage]
-  );
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/advisors/meta', { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: AdvisorsMetaResponse | null) => {
+        if (!data) return;
+        setTotalAdvisors(data.totalAdvisors);
+        setInstituteCounts(data.instituteCounts || []);
+      })
+      .catch(() => {
+        // 忽略中断错误
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     setDirPage(1);
   }, [dirInstituteId, dirSearchQuery, dirDegreeLevel]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams();
+      params.set('instituteId', dirInstituteId);
+      if (dirSearchQuery.trim()) params.set('search', dirSearchQuery.trim());
+      params.set('degreeLevel', dirDegreeLevel);
+      params.set('page', String(dirPage));
+      params.set('pageSize', String(DIRECTORY_PAGE_SIZE));
+
+      fetch(`/api/advisors?${params.toString()}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('advisors fetch error'))))
+        .then((data: AdvisorsPageResponse) => {
+          setPaginatedDirectory(data);
+          setSelectedAdvisorObj((prev) =>
+            prev && data.items.some((a) => a.id === prev.id)
+              ? prev
+              : data.items[0] ?? null
+          );
+        })
+        .catch(() => {
+          // 忽略中断错误
+        });
+    }, dirSearchQuery ? 120 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [dirInstituteId, dirSearchQuery, dirDegreeLevel, dirPage]);
 
   const handleSelectDirectoryAdvisor = (adv: CasAdvisor) => {
     setSelectedAdvisorObj(adv);
@@ -230,41 +340,22 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
     }
   };
 
-  const handleAnalyzeSelectedProfile = (adv: CasAdvisor) => {
-    const plainResearch =
-      adv.researchSummary ||
-      `${adv.name} 课题组隶属于 ${adv.instituteName}（${adv.department}），当前在 ${adv.recruitingMajors.join('、') || '生物学相关专业'} 招收研究生。`;
-
-    const profile: AIAdvisorDeepProfile = {
-      advisorName: adv.name,
-      instituteName: adv.instituteName,
-      plainLanguageResearch: plainResearch,
-      threeYearBreakthroughs:
-        adv.recentPapersContext.length > 0
-          ? adv.recentPapersContext.map((p, i) => ({
-              yearOrTheme: `公开脉络 0${i + 1}`,
-              breakthroughTitle: p.split(':')[0] || '代表性研究方向',
-              significance: p,
-            }))
-          : [
-              {
-                yearOrTheme: '官方公开方向',
-                breakthroughTitle: adv.keywords.join(' / ') || adv.department,
-                significance: '完整论文列表与年度课题进展请点击“访问官方招生/主页”查阅。',
-              },
-            ],
-      researchPrepGuide: [
-        {
-          topic: `学科基础对齐（${adv.keywords.slice(0, 2).join('、') || adv.department}）`,
-          rationale: '结合所报专业初试科目与核心实验技术建立知识关联。',
-          readingSuggestion: `可在 PubMed 或国自然基金库检索 "${adv.name}" 与 "${adv.instituteName.replace('中国科学院', '')}" 阅读英文原著摘要。`,
-        },
-      ],
-      emailPitchTip: '请结合课题组近年发表论文摘要与官方主页信息核实研究细节。',
-    };
-
-    setDeepProfile(profile);
-    onSaveAiSummaryForWhitepaper(`${adv.name} 公开方向摘要：${plainResearch.slice(0, 110)}...`);
+  const handleAnalyzeSelectedProfile = async (adv: CasAdvisor) => {
+    try {
+      const resp = await fetch('/api/advisors/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ advisorId: adv.id }),
+      });
+      if (!resp.ok) return;
+      const profile = (await resp.json()) as AIAdvisorDeepProfile;
+      setDeepProfile(profile);
+      onSaveAiSummaryForWhitepaper(
+        `${adv.name} 公开方向摘要：${profile.plainLanguageResearch.slice(0, 110)}...`
+      );
+    } catch {
+      // 忽略异常
+    }
   };
 
   return (
@@ -320,265 +411,269 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
                 : 'bg-white text-slate-700 hover:bg-slate-50'
             }`}
           >
-            3. 62所导师名录（{CAS_ADVISORS.length}位）
+            3. 62所导师名录（{totalAdvisors}位）
           </button>
         </div>
       </div>
 
       {/* =================================================================
-          工作区 1：三级级联同屏看板（L1领域 -> L2方向 -> L3细分小方向）
+          工作区 1：三级级联同屏看板
          ================================================================= */}
       {workspace === 'quiz' && (
         <div className="space-y-5">
-          {/* 当前三级级联路径面包屑 + 3,089 导师方向实时汇聚统计 */}
-          <div className="border border-slate-200 bg-white px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono font-bold text-[#00407A]">当前三级路径：</span>
-              <span className="font-semibold text-slate-900">{activeLevel1.name}</span>
-              <span className="text-slate-400">→</span>
-              <span className="font-semibold text-slate-900">{activeLevel2.name}</span>
-              <span className="text-slate-400">→</span>
-              <span className="font-semibold text-[#006B77]">{activeLevel3.name}</span>
+          {!activeLevel1 || !activeLevel2 || !activeLevel3 ? (
+            <div className="border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
+              正在加载生物学三级研究方向图谱...
             </div>
-            <span className="font-mono text-[11px] text-[#006B77] tabular-nums">
-              已并入 {corpusStats.totalAdvisorsAnalyzed.toLocaleString()} 导师方向库：
-              {activeNodeCorpus.matchingAdvisorCount} 项相近方向语料
-            </span>
-          </div>
-
-          {/* 三级级联同屏三列面板 */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {/* Level 1 */}
-            <div className="border border-slate-200 bg-white flex flex-col">
-              <div className="border-b border-slate-200 bg-slate-50 px-3.5 py-2.5 flex items-center justify-between">
-                <span className="text-xs font-bold text-[#00407A]">1级 · 生物学研究领域</span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  {RESEARCH_EXPLORATION_TREE.length} 类
+          ) : (
+            <>
+              <div className="border border-slate-200 bg-white px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono font-bold text-[#00407A]">当前三级路径：</span>
+                  <span className="font-semibold text-slate-900">{activeLevel1.name}</span>
+                  <span className="text-slate-400">→</span>
+                  <span className="font-semibold text-slate-900">{activeLevel2.name}</span>
+                  <span className="text-slate-400">→</span>
+                  <span className="font-semibold text-[#006B77]">{activeLevel3.name}</span>
+                </div>
+                <span className="font-mono text-[11px] text-[#006B77] tabular-nums">
+                  已并入 {corpusStats.totalAdvisorsAnalyzed.toLocaleString()} 导师方向库：
+                  {matchingAdvisorCount} 项相近方向语料
                 </span>
               </div>
-              <div className="p-2 space-y-1.5 max-h-[380px] overflow-y-auto">
-                {RESEARCH_EXPLORATION_TREE.map((dom) => {
-                  const active = dom.id === activeLevel1.id;
-                  return (
-                    <button
-                      key={dom.id}
-                      type="button"
-                      onClick={() => handleSelectLevel1(dom.id)}
-                      className={`w-full px-3 py-2 text-left transition-colors border ${
-                        active
-                          ? 'border-[#00407A] bg-[#00407A] text-white'
-                          : 'border-transparent bg-slate-50 text-slate-800 hover:border-slate-300 hover:bg-white'
-                      }`}
-                    >
-                      <div className="text-xs font-bold">{dom.name}</div>
-                      <div
-                        className={`mt-0.5 text-[11px] truncate ${
-                          active ? 'text-sky-100' : 'text-slate-500'
-                        }`}
-                      >
-                        {dom.subtitle}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
 
-            {/* Level 2 */}
-            <div className="border border-slate-200 bg-white flex flex-col">
-              <div className="border-b border-slate-200 bg-slate-50 px-3.5 py-2.5 flex items-center justify-between">
-                <span className="text-xs font-bold text-[#00407A]">2级 · 研究方向</span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  {activeLevel1.directions.length} 个
-                </span>
-              </div>
-              <div className="p-2 space-y-1.5 max-h-[380px] overflow-y-auto">
-                {activeLevel1.directions.map((dir) => {
-                  const active = dir.id === activeLevel2.id;
-                  return (
-                    <button
-                      key={dir.id}
-                      type="button"
-                      onClick={() => handleSelectLevel2(dir.id)}
-                      className={`w-full p-2.5 text-left transition-colors border ${
-                        active
-                          ? 'border-[#00407A] bg-[#F0F5FA] text-[#00407A]'
-                          : 'border-slate-200 bg-white text-slate-800 hover:border-slate-300'
-                      }`}
-                    >
-                      <div className="text-xs font-bold">{dir.name}</div>
-                      <p className="mt-0.5 text-[11px] text-slate-600 line-clamp-1">{dir.summary}</p>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Level 3 */}
-            <div className="border border-slate-200 bg-white flex flex-col">
-              <div className="border-b border-slate-200 bg-slate-50 px-3.5 py-2.5 flex items-center justify-between">
-                <span className="text-xs font-bold text-[#006B77]">3级 · 细分小方向</span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  {activeLevel2.subSpecialties.length} 个
-                </span>
-              </div>
-              <div className="p-2 space-y-1.5 max-h-[380px] overflow-y-auto">
-                {activeLevel2.subSpecialties.map((sub) => {
-                  const active = sub.id === activeLevel3.id;
-                  return (
-                    <button
-                      key={sub.id}
-                      type="button"
-                      onClick={() => handleSelectLevel3(sub.id)}
-                      className={`w-full p-2.5 text-left transition-colors border ${
-                        active
-                          ? 'border-[#006B77] bg-[#F0F9FA] text-[#006B77]'
-                          : 'border-slate-200 bg-white text-slate-800 hover:border-slate-300'
-                      }`}
-                    >
-                      <div className="text-xs font-bold">{sub.name}</div>
-                      <p className="mt-0.5 text-[11px] text-slate-600 line-clamp-1">{sub.summary}</p>
-                      {sub.keyMethods.length > 0 && (
-                        <div className="mt-1 text-[11px] text-slate-500 truncate">
-                          技术：{sub.keyMethods.join(' · ')}
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          {/* 精简表单：补充偏好与提交按钮 */}
-          <form
-            onSubmit={handleRunDirectionQuiz}
-            className="border border-slate-200 bg-white p-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
-          >
-            <div className="flex-1 space-y-1.5">
-              <label htmlFor="q-notes" className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                <Layers className="h-3.5 w-3.5 text-[#00407A]" />
-                <span>补充关键词或意向城市（选填，将加权全库 62 所方向相关度排序）</span>
-              </label>
-              <input
-                id="q-notes"
-                type="text"
-                value={extraNotes}
-                onChange={(e) => setExtraNotes(e.target.value)}
-                placeholder="例如：Python / 上海 / 生物医学工程 / 水产 / 抗逆"
-                className="w-full border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-[#00407A] focus:bg-white focus:outline-none"
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="metro-tile shrink-0 inline-flex items-center justify-center gap-2 bg-[#00407A] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#002B54] whitespace-nowrap"
-            >
-              <Sparkles className="h-4 w-4" />
-              <span>完成三级探索 · 精选高相关方向</span>
-            </button>
-          </form>
-
-          {/* 匹配结果：按相关度从高到低排序，展示精选 10-20 个院系所 + 专业代码 + 官方方向 */}
-          {quizReport && (
-            <div className="space-y-4">
-              <div className="bg-[#00407A] p-4 text-white flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className="space-y-1">
-                  <div className="text-xs font-mono text-sky-200">
-                    按相关度从高到低排序 · 精选 TOP {quizReport.recommendedTeams.length} 个方向
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                {/* Level 1 */}
+                <div className="border border-slate-200 bg-white flex flex-col">
+                  <div className="border-b border-slate-200 bg-slate-50 px-3.5 py-2.5 flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#00407A]">1级 · 生物学研究领域</span>
+                    <span className="font-mono text-[11px] text-slate-500">
+                      {tree.length} 类
+                    </span>
                   </div>
-                  <h3 className="text-base font-bold">{quizReport.headline}</h3>
-                  <p className="text-xs text-sky-100">{quizReport.profileSummary}</p>
-                </div>
-                <div className="shrink-0 w-full md:w-64">
-                  <label htmlFor="quiz-result-filter" className="sr-only">
-                    筛选当前精选结果
-                  </label>
-                  <input
-                    id="quiz-result-filter"
-                    type="text"
-                    value={resultFilterQuery}
-                    onChange={(e) => setResultFilterQuery(e.target.value)}
-                    placeholder="按院所、代码或科目过滤精选结果..."
-                    className="w-full border border-sky-300/40 bg-[#002B54] px-3 py-1.5 text-xs text-white placeholder:text-sky-200/70 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-                {filteredRecommendedDirections.map((team, idx) => {
-                  const fullTag = `${team.instituteName.replace('中国科学院', '')} · ${team.majorCode} ${team.directionName}`;
-                  const isLocked = lockedTeamName === fullTag;
-                  return (
-                    <div
-                      key={`${team.instituteName}-${team.majorCode}-${team.directionName}-${idx}`}
-                      className="border border-slate-200 bg-white p-4 flex flex-col justify-between space-y-3"
-                    >
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
-                          <span className="font-bold text-[#006B77]">
-                            #{String(idx + 1).padStart(2, '0')} · {team.degreeType || '统考方向'}
-                          </span>
-                          <span className="text-slate-500 truncate">{team.suggestedSubjects}</span>
-                        </div>
-                        <div className="text-xs font-bold text-[#00407A] truncate">
-                          {team.instituteName}
-                        </div>
-                        <div className="text-xs font-semibold text-slate-900">
-                          {team.majorCode} {team.majorName}
-                        </div>
-                        <div className="text-xs font-bold text-[#AD1E24] border-t border-slate-100 pt-1.5">
-                          方向：{team.directionName}
-                        </div>
-                        <p className="text-[11px] text-slate-600 line-clamp-1">{team.matchReason}</p>
-                        {team.advisorFocusNote && (
-                          <p className="text-[11px] text-slate-500 truncate">{team.advisorFocusNote}</p>
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
+                  <div className="p-2 space-y-1.5 max-h-[380px] overflow-y-auto">
+                    {tree.map((dom) => {
+                      const active = dom.id === activeLevel1.id;
+                      return (
                         <button
+                          key={dom.id}
                           type="button"
-                          onClick={() =>
-                            onLockTeamTarget({
-                              instituteId: team.instituteId,
-                              instituteName: team.instituteName,
-                              majorCode: team.majorCode,
-                              directionName: team.directionName,
-                            })
-                          }
-                          className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold ${
-                            isLocked
-                              ? 'bg-[#006B77] text-white'
-                              : 'bg-[#00407A] text-white hover:bg-[#002B54]'
+                          onClick={() => handleSelectLevel1(dom.id)}
+                          className={`w-full px-3 py-2 text-left transition-colors border ${
+                            active
+                              ? 'border-[#00407A] bg-[#00407A] text-white'
+                              : 'border-transparent bg-slate-50 text-slate-800 hover:border-slate-300 hover:bg-white'
                           }`}
                         >
-                          {isLocked ? (
-                            <Check className="h-3.5 w-3.5" />
-                          ) : (
-                            <Target className="h-3.5 w-3.5" />
-                          )}
-                          <span>{isLocked ? '已锁定' : '锁定至白皮书'}</span>
-                        </button>
-                        {team.instituteId && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDirInstituteId(team.instituteId!);
-                              setWorkspace('directory');
-                            }}
-                            className="text-[11px] font-medium text-[#00407A] hover:underline"
+                          <div className="text-xs font-bold">{dom.name}</div>
+                          <div
+                            className={`mt-0.5 text-[11px] truncate ${
+                              active ? 'text-sky-100' : 'text-slate-500'
+                            }`}
                           >
-                            查该所名录 →
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                            {dom.subtitle}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Level 2 */}
+                <div className="border border-slate-200 bg-white flex flex-col">
+                  <div className="border-b border-slate-200 bg-slate-50 px-3.5 py-2.5 flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#00407A]">2级 · 研究方向</span>
+                    <span className="font-mono text-[11px] text-slate-500">
+                      {activeLevel1.directions.length} 个
+                    </span>
+                  </div>
+                  <div className="p-2 space-y-1.5 max-h-[380px] overflow-y-auto">
+                    {activeLevel1.directions.map((dir) => {
+                      const active = dir.id === activeLevel2.id;
+                      return (
+                        <button
+                          key={dir.id}
+                          type="button"
+                          onClick={() => handleSelectLevel2(dir.id)}
+                          className={`w-full p-2.5 text-left transition-colors border ${
+                            active
+                              ? 'border-[#00407A] bg-[#F0F5FA] text-[#00407A]'
+                              : 'border-slate-200 bg-white text-slate-800 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="text-xs font-bold">{dir.name}</div>
+                          <p className="mt-0.5 text-[11px] text-slate-600 line-clamp-1">{dir.summary}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Level 3 */}
+                <div className="border border-slate-200 bg-white flex flex-col">
+                  <div className="border-b border-slate-200 bg-slate-50 px-3.5 py-2.5 flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#006B77]">3级 · 细分小方向</span>
+                    <span className="font-mono text-[11px] text-slate-500">
+                      {activeLevel2.subSpecialties.length} 个
+                    </span>
+                  </div>
+                  <div className="p-2 space-y-1.5 max-h-[380px] overflow-y-auto">
+                    {activeLevel2.subSpecialties.map((sub) => {
+                      const active = sub.id === activeLevel3.id;
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          onClick={() => handleSelectLevel3(sub.id)}
+                          className={`w-full p-2.5 text-left transition-colors border ${
+                            active
+                              ? 'border-[#006B77] bg-[#F0F9FA] text-[#006B77]'
+                              : 'border-slate-200 bg-white text-slate-800 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="text-xs font-bold">{sub.name}</div>
+                          <p className="mt-0.5 text-[11px] text-slate-600 line-clamp-1">{sub.summary}</p>
+                          {sub.keyMethods.length > 0 && (
+                            <div className="mt-1 text-[11px] text-slate-500 truncate">
+                              技术：{sub.keyMethods.join(' · ')}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
 
-            </div>
+              <form
+                onSubmit={handleRunDirectionQuiz}
+                className="border border-slate-200 bg-white p-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
+              >
+                <div className="flex-1 space-y-1.5">
+                  <label htmlFor="q-notes" className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                    <Layers className="h-3.5 w-3.5 text-[#00407A]" />
+                    <span>补充关键词或意向城市（选填，将加权全库 62 所方向相关度排序）</span>
+                  </label>
+                  <input
+                    id="q-notes"
+                    type="text"
+                    value={extraNotes}
+                    onChange={(e) => setExtraNotes(e.target.value)}
+                    placeholder="例如：Python / 上海 / 生物医学工程 / 水产 / 抗逆"
+                    className="w-full border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-[#00407A] focus:bg-white focus:outline-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={quizSubmitting}
+                  className="metro-tile shrink-0 inline-flex items-center justify-center gap-2 bg-[#00407A] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#002B54] disabled:opacity-60 whitespace-nowrap"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span>{quizSubmitting ? '正在匹配方向...' : '完成三级探索 · 精选高相关方向'}</span>
+                </button>
+              </form>
+
+              {quizReport && (
+                <div className="space-y-4">
+                  <div className="bg-[#00407A] p-4 text-white flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="space-y-1">
+                      <div className="text-xs font-mono text-sky-200">
+                        按相关度从高到低排序 · 精选 TOP {quizReport.recommendedTeams.length} 个方向
+                      </div>
+                      <h3 className="text-base font-bold">{quizReport.headline}</h3>
+                      <p className="text-xs text-sky-100">{quizReport.profileSummary}</p>
+                    </div>
+                    <div className="shrink-0 w-full md:w-64">
+                      <label htmlFor="quiz-result-filter" className="sr-only">
+                        筛选当前精选结果
+                      </label>
+                      <input
+                        id="quiz-result-filter"
+                        type="text"
+                        value={resultFilterQuery}
+                        onChange={(e) => setResultFilterQuery(e.target.value)}
+                        placeholder="按院所、代码或科目过滤精选结果..."
+                        className="w-full border border-sky-300/40 bg-[#002B54] px-3 py-1.5 text-xs text-white placeholder:text-sky-200/70 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                    {filteredRecommendedDirections.map((team, idx) => {
+                      const fullTag = `${team.instituteName.replace('中国科学院', '')} · ${team.majorCode} ${team.directionName}`;
+                      const isLocked = lockedTeamName === fullTag;
+                      return (
+                        <div
+                          key={`${team.instituteName}-${team.majorCode}-${team.directionName}-${idx}`}
+                          className="border border-slate-200 bg-white p-4 flex flex-col justify-between space-y-3"
+                        >
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
+                              <span className="font-bold text-[#006B77]">
+                                #{String(idx + 1).padStart(2, '0')} · {team.degreeType || '统考方向'}
+                              </span>
+                              <span className="text-slate-500 truncate">{team.suggestedSubjects}</span>
+                            </div>
+                            <div className="text-xs font-bold text-[#00407A] truncate">
+                              {team.instituteName}
+                            </div>
+                            <div className="text-xs font-semibold text-slate-900">
+                              {team.majorCode} {team.majorName}
+                            </div>
+                            <div className="text-xs font-bold text-[#AD1E24] border-t border-slate-100 pt-1.5">
+                              方向：{team.directionName}
+                            </div>
+                            <p className="text-[11px] text-slate-600 line-clamp-1">{team.matchReason}</p>
+                            {team.advisorFocusNote && (
+                              <p className="text-[11px] text-slate-500 truncate">{team.advisorFocusNote}</p>
+                            )}
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onLockTeamTarget({
+                                  instituteId: team.instituteId,
+                                  instituteName: team.instituteName,
+                                  majorCode: team.majorCode,
+                                  directionName: team.directionName,
+                                })
+                              }
+                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold ${
+                                isLocked
+                                  ? 'bg-[#006B77] text-white'
+                                  : 'bg-[#00407A] text-white hover:bg-[#002B54]'
+                              }`}
+                            >
+                              {isLocked ? (
+                                <Check className="h-3.5 w-3.5" />
+                              ) : (
+                                <Target className="h-3.5 w-3.5" />
+                              )}
+                              <span>{isLocked ? '已锁定' : '锁定至白皮书'}</span>
+                            </button>
+                            {team.instituteId && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDirInstituteId(team.instituteId!);
+                                  setWorkspace('directory');
+                                }}
+                                className="text-[11px] font-medium text-[#00407A] hover:underline"
+                              >
+                                查该所名录 →
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -638,10 +733,11 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
                 </div>
                 <button
                   type="submit"
-                  className="metro-tile inline-flex items-center justify-center gap-2 bg-[#006B77] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#005862] whitespace-nowrap"
+                  disabled={teamMatchLoading}
+                  className="metro-tile inline-flex items-center justify-center gap-2 bg-[#006B77] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#005862] disabled:opacity-60 whitespace-nowrap"
                 >
                   <Sparkles className="h-4 w-4" />
-                  <span>检索全库招生方向</span>
+                  <span>{teamMatchLoading ? '正在检索...' : '检索全库招生方向'}</span>
                 </button>
               </form>
 
@@ -743,7 +839,7 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
       )}
 
       {/* =================================================================
-          工作区 3：62 所全量生物导师名录（按研究所分页检索，纯客观名录查询）
+          工作区 3：62 所全量生物导师名录（服务端分页）
          ================================================================= */}
       {workspace === 'directory' && (
         <div className="space-y-4">
@@ -759,15 +855,12 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
                   onChange={(e) => setDirInstituteId(e.target.value)}
                   className="w-full border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-900 focus:border-[#00407A] focus:outline-none"
                 >
-                  <option value="ALL">全部 62 所培养单位名录（{CAS_ADVISORS.length} 位）</option>
-                  {CAS_INSTITUTES.map((inst) => {
-                    const cnt = instituteCounts.get(inst.id) ?? 0;
-                    return (
-                      <option key={inst.id} value={inst.id}>
-                        {inst.name}（{cnt} 位）
-                      </option>
-                    );
-                  })}
+                  <option value="ALL">全部 62 所培养单位名录（{totalAdvisors} 位）</option>
+                  {instituteCounts.map((inst) => (
+                    <option key={inst.id} value={inst.id}>
+                      {inst.name}（{inst.count} 位）
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -803,7 +896,7 @@ export const Module4AIAdvisorHub: React.FC<Module4AIAdvisorHubProps> = ({
           </div>
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            {/* 左侧：按研究所分页的客观名录 */}
+            {/* 左侧：分页名录 */}
             <aside className="lg:col-span-5 border border-slate-200 bg-white flex flex-col">
               <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-1.5 font-bold text-slate-900">

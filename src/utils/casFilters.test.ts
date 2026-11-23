@@ -602,3 +602,28 @@ test('Compliance: AI API removed, empty score input in M3, no current-year banne
   const badMatch = combinedUiAndServer.match(understatedRegex);
   assert.equal(badMatch, null, `Found removed phrase/token: ${badMatch?.[0]}`);
 });
+
+test('Frontend isolation: client entry, components, and pdfWhitepaper never import src/data or casFilters algorithms', () => {
+  const clientFiles = [
+    'src/App.tsx',
+    'src/components/SidebarNav.tsx',
+    'src/components/Module1Panorama.tsx',
+    'src/components/Module2Bidirectional.tsx',
+    'src/components/Module3RiskDashboard.tsx',
+    'src/components/Module4AIAdvisorHub.tsx',
+    'src/components/Module5Whitepaper.tsx',
+    'src/utils/pdfWhitepaper.ts',
+  ];
+
+  const forbiddenImportRegex = /from\s+['"][^'"]*(\/data\/|casFilters)['"]/;
+  for (const relPath of clientFiles) {
+    const content = fs.readFileSync(path.resolve(process.cwd(), relPath), 'utf8');
+    const leaked = content.match(forbiddenImportRegex);
+    assert.equal(leaked, null, `Client file ${relPath} must not import dataset or algorithm: ${leaked?.[0]}`);
+  }
+
+  for (const deployFile of ['api/index.ts', 'vercel.json', 'Dockerfile', 'render.yaml', 'README.md']) {
+    assert.ok(fs.existsSync(path.resolve(process.cwd(), deployFile)), `Missing deployment file: ${deployFile}`);
+  }
+});
+

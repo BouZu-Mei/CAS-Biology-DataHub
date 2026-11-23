@@ -2,19 +2,23 @@
  * @file App.tsx
  * @description 中国科学院生物考研智能百宝箱主应用外壳
  * 统一管理左侧导航状态、跨模块考情联动跳转、三级方向探索完成解锁门禁与个人白皮书目标状态。
+ * 全量数据与核心算法均通过服务端 /api/* 接口按需获取，不在前端源码中嵌入。
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { SidebarNav } from './components/SidebarNav';
 import { Module1Panorama } from './components/Module1Panorama';
 import { Module2Bidirectional } from './components/Module2Bidirectional';
 import { Module3RiskDashboard } from './components/Module3RiskDashboard';
 import { Module4AIAdvisorHub } from './components/Module4AIAdvisorHub';
 import { Module5Whitepaper } from './components/Module5Whitepaper';
-import { CAS_ADVISORS } from './data/casAdvisors';
-import { CAS_INSTITUTES } from './data/casInstitutes';
-import { ADMISSION_DIRECTIONS } from './data/casSubjectsAndAdmissions';
-import { AdmissionDirection, CasAdvisor, NavModule, UserTargetPlan } from './types/cas';
+import {
+  AdmissionDirection,
+  CasAdvisor,
+  CasInstitute,
+  NavModule,
+  UserTargetPlan,
+} from './types/cas';
 
 const STORAGE_KEY = 'cas_bio_toolbox_target_plan_v3';
 
@@ -45,9 +49,7 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = { ...DEFAULT_TARGET_PLAN, ...JSON.parse(saved) } as UserTargetPlan;
-        const validInst = CAS_INSTITUTES.some((i) => i.id === parsed.instituteId);
-        const validDir = ADMISSION_DIRECTIONS.find((d) => d.id === parsed.directionId);
-        if (validInst && validDir) {
+        if (parsed.instituteId && parsed.directionId) {
           return parsed;
         }
       }
@@ -57,6 +59,10 @@ export default function App() {
     return DEFAULT_TARGET_PLAN;
   });
 
+  const [targetInstitute, setTargetInstitute] = useState<CasInstitute | undefined>(undefined);
+  const [targetDirection, setTargetDirection] = useState<AdmissionDirection | undefined>(undefined);
+  const [targetAdvisor, setTargetAdvisor] = useState<CasAdvisor | null>(null);
+
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(targetPlan));
@@ -65,20 +71,44 @@ export default function App() {
     }
   }, [targetPlan]);
 
-  const targetInstitute = useMemo(
-    () => CAS_INSTITUTES.find((i) => i.id === targetPlan.instituteId),
-    [targetPlan.instituteId]
-  );
+  // 通过服务端接口解析当前已锁定的目标院所、方向及导师
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/app/resolve-target', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instituteId: targetPlan.instituteId,
+        directionId: targetPlan.directionId,
+        advisorId: targetPlan.advisorId,
+      }),
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('resolve failed'))))
+      .then((data: { institute: CasInstitute; direction: AdmissionDirection; advisor: CasAdvisor | null }) => {
+        setTargetInstitute(data.institute);
+        setTargetDirection(data.direction);
+        setTargetAdvisor(data.advisor ?? null);
+        // 若本地缓存了已废弃或失效 ID（如旧版缓存），自动同步为服务端规范后的目标 ID
+        if (
+          data.direction?.id &&
+          (data.direction.id !== targetPlan.directionId || data.institute.id !== targetPlan.instituteId)
+        ) {
+          setTargetPlan((prev) => ({
+            ...prev,
+            instituteId: data.institute.id,
+            directionId: data.direction.id,
+          }));
+        }
+      })
+      .catch((err) => {
+        if (err?.name !== 'AbortError') {
+          // 保持当前展示状态
+        }
+      });
 
-  const targetDirection = useMemo(
-    () => ADMISSION_DIRECTIONS.find((d) => d.id === targetPlan.directionId),
-    [targetPlan.directionId]
-  );
-
-  const targetAdvisor = useMemo(
-    () => (targetPlan.advisorId ? CAS_ADVISORS.find((a) => a.id === targetPlan.advisorId) ?? null : null),
-    [targetPlan.advisorId]
-  );
+    return () => controller.abort();
+  }, [targetPlan.instituteId, targetPlan.directionId, targetPlan.advisorId]);
 
   const handleJumpToInstituteDirections = (instituteId: string) => {
     setModule2InstituteJump(instituteId);
@@ -116,25 +146,40 @@ export default function App() {
     majorCode: string;
     directionName: string;
   }) => {
-    const matchedDir =
-      ADMISSION_DIRECTIONS.find(
-        (d) =>
-          (payload.instituteId ? d.instituteId === payload.instituteId : d.instituteName.includes(payload.instituteName)) &&
-          d.majorCode === payload.majorCode
-      ) ??
-      ADMISSION_DIRECTIONS.find((d) =>
-        payload.instituteId ? d.instituteId === payload.instituteId : d.instituteName.includes(payload.instituteName)
-      );
-
+    const teamTag = `${payload.instituteName.replace('中国科学院', '')} · ${payload.majorCode} ${payload.directionName}`;
     setTargetPlan((prev) => ({
       ...prev,
-      instituteId: matchedDir?.instituteId ?? payload.instituteId ?? prev.instituteId,
-      directionId: matchedDir?.id ?? prev.directionId,
-      selectedSubjectCodes: matchedDir
-        ? [matchedDir.subjects.subject3Code, matchedDir.subjects.subject4Code].filter((c) => c && c !== '无')
-        : prev.selectedSubjectCodes,
-      targetTeamName: `${payload.instituteName.replace('中国科学院', '')} · ${payload.majorCode} ${payload.directionName}`,
+      targetTeamName: teamTag,
     }));
+
+    fetch('/api/app/resolve-target', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lockPayload: payload,
+        advisorId: targetPlan.advisorId,
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { institute: CasInstitute; direction: AdmissionDirection; advisor: CasAdvisor | null } | null) => {
+        if (!data?.direction) return;
+        const codes = [
+          data.direction.subjects.subject3Code,
+          data.direction.subjects.subject4Code,
+        ].filter((c) => c && c !== '无');
+        setTargetInstitute(data.institute);
+        setTargetDirection(data.direction);
+        setTargetPlan((prev) => ({
+          ...prev,
+          instituteId: data.direction.instituteId,
+          directionId: data.direction.id,
+          selectedSubjectCodes: codes,
+          targetTeamName: teamTag,
+        }));
+      })
+      .catch(() => {
+        // 已更新 targetTeamName，忽略网络抖动
+      });
   };
 
   const handleLockAdvisor = (advisor: CasAdvisor) => {

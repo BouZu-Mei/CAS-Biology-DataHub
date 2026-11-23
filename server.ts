@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import { createApiRouter } from './server/api';
 
 dotenv.config();
 
@@ -16,14 +17,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));
 
 const PORT = Number(process.env.PORT) || 3000;
 
-/** 健康检查端点 */
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'cas-bio-toolbox' });
-});
+/** 挂载服务端全量数据与核心算法 API */
+app.use('/api', createApiRouter());
 
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';

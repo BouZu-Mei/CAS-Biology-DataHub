@@ -1,12 +1,10 @@
 /**
  * @file Module5Whitepaper.tsx
  * @description 模块五：初试考纲资源与个人备考白皮书
- * 1. 展示选定初试科目的国科大官方考纲 PDF 链接、B站/MOOC 推荐视频课程链接、官方参考书目。
- * 2. 提供按初试专业课科目筛选的高频核心考点与实验设计精析库。
- * 3. 支持用户核对/调整目标院所、专业、初试科目及心仪导师，一键生成《中科院生物考研作战白皮书.pdf》。
+ * 所有考纲书目、四区间计算与报考难度数据均通过服务端 /api/directions/options 与 /api/whitepaper/context 获取。
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BookMarked,
@@ -18,15 +16,12 @@ import {
   FileText,
   Search,
 } from 'lucide-react';
-import { CAS_INSTITUTES } from '../data/casInstitutes';
-import { SUBJECT_PREP_RESOURCES } from '../data/casResources';
-import { ADMISSION_DIRECTIONS, ADMISSION_RISK_RECORDS } from '../data/casSubjectsAndAdmissions';
-import { UserTargetPlan } from '../types/cas';
+import { INSTITUTE_DIFFICULTY_META } from '../constants/uiMeta';
 import {
-  calculateScoreSafetyMetrics,
-  evaluateScoreAgainstZones,
-  INSTITUTE_DIFFICULTY_META,
-} from '../utils/casFilters';
+  DirectionOptionSummary,
+  UserTargetPlan,
+  WhitepaperContextResponse,
+} from '../types/cas';
 import { downloadSubjectSyllabusText, generateAndDownloadWhitepaperPDF } from '../utils/pdfWhitepaper';
 
 interface Module5WhitepaperProps {
@@ -44,92 +39,79 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
   const [dirSearchQuery, setDirSearchQuery] = useState('');
 
+  const [directionOptions, setDirectionOptions] = useState<DirectionOptionSummary[]>([]);
+  const [totalDirectionsCount, setTotalDirectionsCount] = useState<number>(241);
+  const [contextData, setContextData] = useState<WhitepaperContextResponse | null>(null);
+  const [loadingContext, setLoadingContext] = useState<boolean>(true);
+
+  // 加载下拉选项列表
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/directions/options', { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('options fetch error'))))
+      .then((data: { items: DirectionOptionSummary[]; totalCount: number }) => {
+        setDirectionOptions(data.items || []);
+        setTotalDirectionsCount(data.totalCount || data.items?.length || 241);
+      })
+      .catch(() => {
+        // 忽略中断错误
+      });
+    return () => controller.abort();
+  }, []);
+
+  // 按当前方向与目标分数从服务端获取考纲资源、难度等级与四区间划分
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLoadingContext(true);
+      const params = new URLSearchParams();
+      if (targetPlan.directionId) params.set('directionId', targetPlan.directionId);
+      if (Number.isFinite(targetPlan.customGoalScore)) {
+        params.set('goalScore', String(targetPlan.customGoalScore));
+      }
+
+      fetch(`/api/whitepaper/context?${params.toString()}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('whitepaper context fetch error'))))
+        .then((data: WhitepaperContextResponse) => {
+          setContextData(data);
+        })
+        .catch(() => {
+          // 忽略中断错误
+        })
+        .finally(() => setLoadingContext(false));
+    }, 80);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [targetPlan.directionId, targetPlan.customGoalScore]);
+
   const filteredDirections = useMemo(() => {
     const q = dirSearchQuery.trim().toLowerCase();
-    if (!q) return ADMISSION_DIRECTIONS;
+    if (!q) return directionOptions;
     const tokens = q.split(/[\s,，/+]+/).filter(Boolean);
-    return ADMISSION_DIRECTIONS.filter((dir) => {
+    return directionOptions.filter((dir) => {
       const hay = [
         dir.instituteName,
         dir.majorCode,
         dir.majorName,
         dir.directionName,
-        dir.subjects.subject3Code,
-        dir.subjects.subject3Name,
-        dir.subjects.subject4Code,
-        dir.subjects.subject4Name,
+        dir.subject3Code,
+        dir.subject3Name,
+        dir.subject4Code,
+        dir.subject4Name,
       ]
         .join(' ')
         .toLowerCase();
       return tokens.every((tk) => hay.includes(tk));
     });
-  }, [dirSearchQuery]);
-
-  const selectedDirection = useMemo(() => {
-    const exact = ADMISSION_DIRECTIONS.find((d) => d.id === targetPlan.directionId);
-    if (exact && (!dirSearchQuery.trim() || filteredDirections.some((d) => d.id === exact.id))) {
-      return exact;
-    }
-    return filteredDirections[0] ?? exact ?? ADMISSION_DIRECTIONS[0];
-  }, [targetPlan.directionId, dirSearchQuery, filteredDirections]);
-
-  const selectedInstitute = useMemo(
-    () => CAS_INSTITUTES.find((i) => i.id === selectedDirection.instituteId) ?? CAS_INSTITUTES[0],
-    [selectedDirection.instituteId]
-  );
-
-  const matchingRiskRecord = useMemo(
-    () =>
-      ADMISSION_RISK_RECORDS.find(
-        (r) => r.directionId === selectedDirection.id && r.year === 2026
-      ) ??
-      ADMISSION_RISK_RECORDS.find(
-        (r) =>
-          r.instituteId === selectedDirection.instituteId &&
-          r.majorCode === selectedDirection.majorCode &&
-          r.year === 2026
-      ) ??
-      ADMISSION_RISK_RECORDS.find(
-        (r) => r.instituteId === selectedInstitute.id && r.year === 2026
-      ) ??
-      ADMISSION_RISK_RECORDS.find((r) => r.instituteId === selectedInstitute.id) ??
-      null,
-    [selectedDirection.id, selectedDirection.instituteId, selectedDirection.majorCode, selectedInstitute.id]
-  );
-
-  const safetyMetrics = useMemo(
-    () => (matchingRiskRecord ? calculateScoreSafetyMetrics(matchingRiskRecord) : null),
-    [matchingRiskRecord]
-  );
-
-  const goalZoneEval = useMemo(
-    () =>
-      safetyMetrics && Number.isFinite(targetPlan.customGoalScore)
-        ? evaluateScoreAgainstZones(targetPlan.customGoalScore, safetyMetrics)
-        : null,
-    [safetyMetrics, targetPlan.customGoalScore]
-  );
-
-  // 直接依据当前选定方向实时同步初试科目代码并按科目3→科目4顺序排列，彻底避免切换方向后下方矩阵未同步
-  const activeSubjectCodes = useMemo(
-    () =>
-      [selectedDirection.subjects.subject3Code, selectedDirection.subjects.subject4Code].filter(
-        (c) => Boolean(c) && c !== '无'
-      ),
-    [selectedDirection]
-  );
-
-  const matchedResources = useMemo(() => {
-    const map = new Map(SUBJECT_PREP_RESOURCES.map((r) => [r.subjectCode, r]));
-    return activeSubjectCodes
-      .map((code) => map.get(code))
-      .filter((r): r is NonNullable<typeof r> => Boolean(r));
-  }, [activeSubjectCodes]);
+  }, [dirSearchQuery, directionOptions]);
 
   const handleDirectionChange = (dirId: string) => {
-    const dir = ADMISSION_DIRECTIONS.find((d) => d.id === dirId);
+    const dir = directionOptions.find((d) => d.id === dirId);
     if (!dir) return;
-    const codes = [dir.subjects.subject3Code, dir.subjects.subject4Code].filter(
+    const codes = [dir.subject3Code, dir.subject4Code].filter(
       (c) => c && c !== '无'
     );
     onUpdatePlan((prev) => ({
@@ -145,16 +127,16 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
     const q = value.trim().toLowerCase();
     if (!q) return;
     const tokens = q.split(/[\s,，/+]+/).filter(Boolean);
-    const matches = ADMISSION_DIRECTIONS.filter((dir) => {
+    const matches = directionOptions.filter((dir) => {
       const hay = [
         dir.instituteName,
         dir.majorCode,
         dir.majorName,
         dir.directionName,
-        dir.subjects.subject3Code,
-        dir.subjects.subject3Name,
-        dir.subjects.subject4Code,
-        dir.subjects.subject4Name,
+        dir.subject3Code,
+        dir.subject3Name,
+        dir.subject4Code,
+        dir.subject4Name,
       ]
         .join(' ')
         .toLowerCase();
@@ -165,7 +147,22 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
     }
   };
 
+  const selectedDirection = contextData?.direction ?? null;
+  const selectedInstitute = contextData?.institute ?? null;
+  const matchingRiskRecord = contextData?.riskRecord ?? null;
+  const safetyMetrics = contextData?.safetyMetrics ?? null;
+  const goalZoneEval = contextData?.goalZoneEval ?? null;
+  const matchedResources = contextData?.resources ?? [];
+
+  const activeSubjectCodes = useMemo(() => {
+    if (!selectedDirection) return targetPlan.selectedSubjectCodes;
+    return [selectedDirection.subjects.subject3Code, selectedDirection.subjects.subject4Code].filter(
+      (c) => Boolean(c) && c !== '无'
+    );
+  }, [selectedDirection, targetPlan.selectedSubjectCodes]);
+
   const handleExportPdf = async () => {
+    if (!selectedDirection || !selectedInstitute) return;
     setExportingPdf(true);
     setExportSuccessMessage(null);
     try {
@@ -179,6 +176,7 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
         institute: selectedInstitute,
         direction: selectedDirection,
         riskRecord: matchingRiskRecord,
+        safetyMetrics,
         resources: matchedResources,
         aiInsightSummary,
       });
@@ -203,7 +201,7 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
 
         <button
           type="button"
-          disabled={exportingPdf}
+          disabled={exportingPdf || !selectedDirection || !selectedInstitute}
           onClick={handleExportPdf}
           className="metro-tile shrink-0 inline-flex items-center gap-2 bg-[#AD1E24] px-5 py-3 text-sm font-bold text-white hover:bg-[#8E161B] disabled:opacity-60 whitespace-nowrap"
         >
@@ -249,7 +247,7 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
                 目标院所 · 专业与科目组合
               </label>
               <span className="font-mono text-[11px] text-slate-500 tabular-nums">
-                匹配 {filteredDirections.length} / {ADMISSION_DIRECTIONS.length}
+                匹配 {filteredDirections.length} / {totalDirectionsCount}
               </span>
             </div>
             <div className="mt-1 space-y-1.5">
@@ -267,20 +265,22 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
               </div>
               <select
                 id="wp-dir"
-                value={selectedDirection.id}
+                value={selectedDirection?.id ?? targetPlan.directionId}
                 onChange={(e) => handleDirectionChange(e.target.value)}
                 className="w-full border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-900 focus:border-[#00407A] focus:outline-none"
               >
                 {filteredDirections.length === 0 ? (
-                  <option value={selectedDirection.id}>
-                    无匹配方向，请精简搜索词（当前保留：{selectedDirection.instituteName} · {selectedDirection.majorCode}）
+                  <option value={targetPlan.directionId}>
+                    {selectedDirection
+                      ? `无匹配方向，当前保留：${selectedDirection.instituteName} · ${selectedDirection.majorCode}`
+                      : '正在加载报考方向列表...'}
                   </option>
                 ) : (
                   filteredDirections.map((dir) => {
                     const combo =
-                      dir.subjects.subject4Code && dir.subjects.subject4Code !== '无'
-                        ? `${dir.subjects.subject3Code}+${dir.subjects.subject4Code}`
-                        : `${dir.subjects.subject3Code}综合`;
+                      dir.subject4Code && dir.subject4Code !== '无'
+                        ? `${dir.subject3Code}+${dir.subject4Code}`
+                        : `${dir.subject3Code}综合`;
                     return (
                       <option key={dir.id} value={dir.id}>
                         {dir.instituteName} · {dir.majorCode} {dir.majorName} ({combo})
@@ -331,7 +331,7 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
       </div>
 
       {/* 所选院所与专业报考难度及分数线四区间展示 */}
-      {(() => {
+      {selectedInstitute && selectedDirection ? (() => {
         const tierMeta = INSTITUTE_DIFFICULTY_META[selectedInstitute.difficultyTier];
         const zones = safetyMetrics?.scoreZones ?? [];
         const axisMin = safetyMetrics?.axisMin ?? 240;
@@ -466,7 +466,11 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
             )}
           </div>
         );
-      })()}
+      })() : (
+        <div className="border border-slate-200 bg-white p-6 text-center text-xs text-slate-500">
+          {loadingContext ? '正在加载目标报考难度与四区间数据...' : '请选择目标专业方向'}
+        </div>
+      )}
 
       {/* 01. 已选定初试专业课考纲矩阵 */}
       <div className="space-y-4">
@@ -474,10 +478,12 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
           <h3 className="text-base font-bold text-slate-900">
             01. 初试专业课考纲矩阵（{activeSubjectCodes.join(' + ')}）
           </h3>
-          <span className="text-xs text-slate-500">
-            当前方向：{selectedDirection.instituteName} · {selectedDirection.majorCode}{' '}
-            {selectedDirection.majorName}
-          </span>
+          {selectedDirection && (
+            <span className="text-xs text-slate-500">
+              当前方向：{selectedDirection.instituteName} · {selectedDirection.majorCode}{' '}
+              {selectedDirection.majorName}
+            </span>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -527,7 +533,7 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
         </div>
       </div>
 
-      {/* 02. 推荐视频课程与核心参考书目（参考书目纯文本书目信息展示，不附带外部链接） */}
+      {/* 02. 推荐视频课程与核心参考书目 */}
       <div className="border border-slate-200 bg-white p-5 space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
           <h3 className="text-base font-bold text-slate-900">02. 推荐视频课程与官方考纲参考书目</h3>
@@ -543,7 +549,6 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
                 </span>
               </div>
 
-              {/* 推荐视频课程（B站 / MOOC） */}
               <div>
                 <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
                   <PlayCircle className="h-3.5 w-3.5 text-[#006B77]" />
@@ -569,7 +574,6 @@ export const Module5Whitepaper: React.FC<Module5WhitepaperProps> = ({
                 </div>
               </div>
 
-              {/* 参考书目（纯文字书目卡片，不附带外部链接；原文未单列具体书名则留空并附原话） */}
               <div className="border-t border-slate-200 pt-3">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
                   <BookMarked className="h-3.5 w-3.5 text-[#AD1E24]" />

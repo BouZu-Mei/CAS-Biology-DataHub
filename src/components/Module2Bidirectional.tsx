@@ -1,22 +1,33 @@
 /**
  * @file Module2Bidirectional.tsx
  * @description 模块二：初试科目与院所双向检索
- * 支持：
- * 1. 勾选目标初试专业课反向过滤匹配的研究所、联培专项、专业代码（071000/086000等）及研究方向。
- * 2. 直接搜索或点击某个院所（覆盖 62 所单位）一键展开下属所有招生方向与四科初试组合，并设为个人白皮书备考目标。
+ * 全部 241 条统考方向与科目反查均通过服务端 /api/bidirectional 接口完成。
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Check, RotateCcw, Search, Layers, Target } from 'lucide-react';
-import { CAS_INSTITUTES } from '../data/casInstitutes';
-import { ADMISSION_DIRECTIONS, EXAM_SUBJECTS } from '../data/casSubjectsAndAdmissions';
-import { AdmissionDirection } from '../types/cas';
-import { filterBidirectionalDirections } from '../utils/casFilters';
+import { AdmissionDirection, ExamSubject } from '../types/cas';
 
 interface Module2BidirectionalProps {
   initialInstituteFilter: string | 'ALL';
   activeTargetDirectionId: string;
   onSelectAsTarget: (direction: AdmissionDirection) => void;
+}
+
+interface InstituteOption {
+  id: string;
+  name: string;
+  shortName: string;
+  code: string;
+  city: string;
+}
+
+interface BidirectionalApiResponse {
+  directions: AdmissionDirection[];
+  totalCount: number;
+  totalDirectionsCount: number;
+  examSubjects: ExamSubject[];
+  instituteOptions: InstituteOption[];
 }
 
 export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
@@ -32,13 +43,52 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
   const [degreeType, setDegreeType] = useState<'ALL' | '学术型硕士' | '专业型硕士'>('ALL');
   const [onlyJoint, setOnlyJoint] = useState(false);
 
-  // 支持从模块一跳入时同步院所筛选
-  React.useEffect(() => {
+  const [directions, setDirections] = useState<AdmissionDirection[]>([]);
+  const [totalDirectionsCount, setTotalDirectionsCount] = useState<number>(241);
+  const [examSubjects, setExamSubjects] = useState<ExamSubject[]>([]);
+  const [instituteOptions, setInstituteOptions] = useState<InstituteOption[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  useEffect(() => {
     if (initialInstituteFilter !== 'ALL') {
       setInstituteId(initialInstituteFilter);
       setSelectedSubjectCodes([]);
     }
   }, [initialInstituteFilter]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      const params = new URLSearchParams();
+      if (selectedSubjectCodes.length > 0) params.set('subjects', selectedSubjectCodes.join(','));
+      params.set('matchMode', matchMode);
+      if (instituteId !== 'ALL') params.set('instituteId', instituteId);
+      if (searchQuery.trim()) params.set('search', searchQuery.trim());
+      if (degreeType !== 'ALL') params.set('degreeType', degreeType);
+      if (onlyJoint) params.set('onlyJoint', 'true');
+
+      fetch(`/api/bidirectional?${params.toString()}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('bidirectional fetch error'))))
+        .then((data: BidirectionalApiResponse) => {
+          setDirections(data.directions);
+          setTotalDirectionsCount(data.totalDirectionsCount);
+          if (data.examSubjects?.length) setExamSubjects(data.examSubjects);
+          if (data.instituteOptions?.length) setInstituteOptions(data.instituteOptions);
+        })
+        .catch((err) => {
+          if (err?.name !== 'AbortError') {
+            setDirections([]);
+          }
+        })
+        .finally(() => setLoading(false));
+    }, searchQuery ? 120 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [selectedSubjectCodes, matchMode, instituteId, searchQuery, degreeType, onlyJoint]);
 
   const toggleSubject = (code: string) => {
     setSelectedSubjectCodes((prev) =>
@@ -48,36 +98,19 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
 
   const availableInstitutes = useMemo(() => {
     const q = instQuickFilter.trim().toLowerCase();
-    return CAS_INSTITUTES.filter((inst) => {
-      const hasDir = ADMISSION_DIRECTIONS.some((d) => d.instituteId === inst.id);
-      if (!hasDir) return false;
-      if (!q) return true;
-      return (
+    if (!q) return instituteOptions;
+    return instituteOptions.filter(
+      (inst) =>
         inst.shortName.toLowerCase().includes(q) ||
         inst.name.toLowerCase().includes(q) ||
         inst.code.includes(q) ||
         inst.city.toLowerCase().includes(q)
-      );
-    });
-  }, [instQuickFilter]);
+    );
+  }, [instQuickFilter, instituteOptions]);
 
-  const filteredDirections = useMemo(
-    () =>
-      filterBidirectionalDirections(ADMISSION_DIRECTIONS, {
-        selectedSubjectCodes,
-        matchMode,
-        instituteId,
-        searchQuery,
-        degreeType,
-        onlyJoint,
-      }),
-    [selectedSubjectCodes, matchMode, instituteId, searchQuery, degreeType, onlyJoint]
-  );
-
-  // 按院所/项目聚合展示
   const groupedByInstitute = useMemo(() => {
     const map = new Map<string, { title: string; items: AdmissionDirection[] }>();
-    for (const dir of filteredDirections) {
+    for (const dir of directions) {
       const key = dir.instituteName;
       const existing = map.get(key);
       if (existing) {
@@ -87,7 +120,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
       }
     }
     return Array.from(map.entries());
-  }, [filteredDirections]);
+  }, [directions]);
 
   const resetAllFilters = () => {
     setSelectedSubjectCodes([]);
@@ -105,7 +138,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
           初试科目与院所双向检索
         </h2>
         <p className="mt-1 text-sm text-slate-600">
-          覆盖 {CAS_INSTITUTES.length} 所培养单位共 {ADMISSION_DIRECTIONS.length} 条统考方向，支持按科目反查院所或按院所查全量方向。
+          覆盖 {instituteOptions.length || 62} 所培养单位共 {totalDirectionsCount} 条统考方向，支持按科目反查院所或按院所查全量方向。
         </p>
       </div>
 
@@ -126,7 +159,6 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
               )}
             </div>
 
-            {/* 匹配逻辑切换 */}
             <div className="mt-3 flex border border-slate-300 text-xs">
               <button
                 type="button"
@@ -149,7 +181,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
             </div>
 
             <div className="mt-3 space-y-2 max-h-[360px] overflow-y-auto pr-1">
-              {EXAM_SUBJECTS.map((subj) => {
+              {examSubjects.map((subj) => {
                 const checked = selectedSubjectCodes.includes(subj.code);
                 return (
                   <label
@@ -182,12 +214,11 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
             </div>
           </div>
 
-          {/* 快速按院所一键展开（支持 62 所院所过滤） */}
           <div className="border border-slate-200 bg-white p-5">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-900">02. 按院所/专项一键展开</h3>
               <span className="font-mono text-[11px] text-slate-500 tabular-nums">
-                {CAS_INSTITUTES.length} 所
+                {instituteOptions.length || 62} 所
               </span>
             </div>
             <p className="mt-1 text-xs text-slate-500">
@@ -284,7 +315,7 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 text-xs text-slate-600">
               <span>
-                共匹配 <strong className="font-mono text-[#00407A] tabular-nums">{filteredDirections.length}</strong>{' '}
+                共匹配 <strong className="font-mono text-[#00407A] tabular-nums">{directions.length}</strong>{' '}
                 条招生方向（涵盖 {groupedByInstitute.length} 个培养单位/专项）
               </span>
               <button
@@ -298,7 +329,11 @@ export const Module2Bidirectional: React.FC<Module2BidirectionalProps> = ({
             </div>
           </div>
 
-          {groupedByInstitute.length === 0 ? (
+          {loading && directions.length === 0 ? (
+            <div className="border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">
+              正在从服务端匹配招生方向与初试科目...
+            </div>
+          ) : groupedByInstitute.length === 0 ? (
             <div className="border border-slate-200 bg-white p-12 text-center">
               <Layers className="mx-auto h-8 w-8 text-slate-400" />
               <h4 className="mt-2 text-base font-semibold text-slate-900">暂无同时满足当前科目组合的方向</h4>

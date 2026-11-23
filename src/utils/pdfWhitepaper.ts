@@ -10,16 +10,17 @@ import {
   AdmissionDirection,
   AdmissionRiskRecord,
   CasInstitute,
+  ScoreSafetyMetrics,
   SubjectPrepResource,
   UserTargetPlan,
 } from '../types/cas';
-import { calculateScoreSafetyMetrics } from './casFilters';
 
 export interface WhitepaperPayload {
   plan: UserTargetPlan;
   institute: CasInstitute;
   direction: AdmissionDirection;
   riskRecord: AdmissionRiskRecord | null;
+  safetyMetrics?: ScoreSafetyMetrics | null;
   resources: SubjectPrepResource[];
   aiInsightSummary?: string;
 }
@@ -130,7 +131,7 @@ function drawSectionHeader(ctx: CanvasRenderingContext2D, indexLabel: string, ti
  * 生成并触发下载《中科院生物考研作战白皮书.pdf》
  */
 export async function generateAndDownloadWhitepaperPDF(payload: WhitepaperPayload): Promise<void> {
-  const { plan, institute, direction, riskRecord, resources, aiInsightSummary } = payload;
+  const { plan, institute, direction, riskRecord, safetyMetrics, resources, aiInsightSummary } = payload;
 
   const subject4Text =
     direction.subjects.subject4Code && direction.subjects.subject4Code !== '无'
@@ -239,12 +240,11 @@ export async function generateAndDownloadWhitepaperPDF(payload: WhitepaperPayloa
 
   y = drawSectionHeader(ctx1, '02', '招生计划与官方分数线核验', y);
   if (riskRecord) {
-    const metrics = calculateScoreSafetyMetrics(riskRecord);
     const statItems = [
       { k: '统计年份', v: `${riskRecord.year} 届` },
       { k: '拟招生计划', v: riskRecord.plannedQuota !== null ? `${riskRecord.plannedQuota} 人` : '暂无数据' },
       { k: '官方总分线', v: riskRecord.prelimThreshold !== null ? `${riskRecord.prelimThreshold} 分` : '暂无数据' },
-      { k: '竞争定级', v: metrics.riskLevel },
+      { k: '竞争定级', v: safetyMetrics?.riskLevel ?? institute.difficultyTier },
     ];
 
     const cellW = CONTENT_W / 4;
@@ -273,8 +273,8 @@ export async function generateAndDownloadWhitepaperPDF(payload: WhitepaperPayloa
 
     y += 116;
 
-    const goalTarget = metrics.recommendedSafeTarget
-      ? Math.max(plan.customGoalScore, metrics.recommendedSafeTarget)
+    const goalTarget = safetyMetrics?.recommendedSafeTarget
+      ? Math.max(plan.customGoalScore, safetyMetrics.recommendedSafeTarget)
       : plan.customGoalScore;
 
     y = drawWrappedText(

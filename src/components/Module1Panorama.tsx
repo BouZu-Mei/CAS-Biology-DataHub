@@ -1,10 +1,10 @@
 /**
  * @file Module1Panorama.tsx
  * @description 模块一：院所全景档案与联培专项雷达
- * 首页仅保留 62 所院所基础档案与固定结构统计，不展示不固定招生名额与同卷平替；联培雷达独立于子页签并隐藏不固定名额。
+ * 院所数据与联培目录均通过服务端 /api/institutes 与 /api/joint-programs 接口按需查询。
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   MapPin,
   GraduationCap,
@@ -15,8 +15,6 @@ import {
   Scale,
   BookOpen,
 } from 'lucide-react';
-import { CAS_INSTITUTES } from '../data/casInstitutes';
-import { CAS_JOINT_PROGRAMS } from '../data/casJointPrograms';
 import {
   CasInstitute,
   InstituteDifficultyTier,
@@ -24,15 +22,28 @@ import {
   RegionZone,
 } from '../types/cas';
 import {
-  filterInstitutes,
-  filterJointPrograms,
   INSTITUTE_DIFFICULTY_META,
   INSTITUTE_DIFFICULTY_TIERS,
-} from '../utils/casFilters';
+} from '../constants/uiMeta';
 
 interface Module1PanoramaProps {
   onJumpToInstituteDirections: (instituteId: string) => void;
   onJumpToRiskDashboard: (instituteKeyword: string) => void;
+}
+
+interface InstitutesApiResponse {
+  items: CasInstitute[];
+  totalCount: number;
+  totalInstitutes: number;
+  regionCounts: Record<string, number>;
+  tierCounts?: Record<string, number>;
+}
+
+interface JointProgramsApiResponse {
+  items: JointProgram[];
+  totalCount: number;
+  totalJointCount: number;
+  categories: string[];
 }
 
 export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
@@ -45,42 +56,109 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [regionFilter, setRegionFilter] = useState<RegionZone | 'ALL'>('ALL');
   const [difficultyFilter, setDifficultyFilter] = useState<InstituteDifficultyTier | 'ALL'>('ALL');
-  const [selectedInstitute, setSelectedInstitute] = useState<CasInstitute>(CAS_INSTITUTES[0]);
+  const [institutes, setInstitutes] = useState<CasInstitute[]>([]);
+  const [totalInstitutes, setTotalInstitutes] = useState<number>(62);
+  const [regionCountsMap, setRegionCountsMap] = useState<Record<string, number>>({});
+  const [tierCountsMap, setTierCountsMap] = useState<Record<string, number>>({});
+  const [loadingInstitutes, setLoadingInstitutes] = useState<boolean>(true);
+  const [selectedInstitute, setSelectedInstitute] = useState<CasInstitute | null>(null);
 
   // 联培雷达筛选状态
   const [partnerKeyword, setPartnerKeyword] = useState('');
   const [programCategory, setProgramCategory] = useState<string>('ALL');
-  const [selectedJoint, setSelectedJoint] = useState<JointProgram | null>(CAS_JOINT_PROGRAMS[0]);
+  const [jointPrograms, setJointPrograms] = useState<JointProgram[]>([]);
+  const [totalJointCount, setTotalJointCount] = useState<number>(11);
+  const [loadingJoints, setLoadingJoints] = useState<boolean>(false);
+  const [selectedJoint, setSelectedJoint] = useState<JointProgram | null>(null);
 
-  const filteredInstitutes = useMemo(
-    () => filterInstitutes(CAS_INSTITUTES, searchQuery, regionFilter, difficultyFilter),
-    [searchQuery, regionFilter, difficultyFilter]
-  );
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLoadingInstitutes(true);
+      const params = new URLSearchParams();
+      if (searchQuery.trim()) params.set('search', searchQuery.trim());
+      if (regionFilter !== 'ALL') params.set('region', regionFilter);
+      if (difficultyFilter !== 'ALL') params.set('difficulty', difficultyFilter);
+
+      fetch(`/api/institutes?${params.toString()}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('institutes fetch error'))))
+        .then((data: InstitutesApiResponse) => {
+          setInstitutes(data.items);
+          setTotalInstitutes(data.totalInstitutes);
+          setRegionCountsMap(data.regionCounts || {});
+          if (data.tierCounts) setTierCountsMap(data.tierCounts);
+          setSelectedInstitute((prev) =>
+            prev && data.items.some((i) => i.id === prev.id)
+              ? data.items.find((i) => i.id === prev.id) ?? null
+              : data.items[0] ?? null
+          );
+        })
+        .catch((err) => {
+          if (err?.name !== 'AbortError') {
+            setInstitutes([]);
+          }
+        })
+        .finally(() => setLoadingInstitutes(false));
+    }, searchQuery ? 120 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchQuery, regionFilter, difficultyFilter]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLoadingJoints(true);
+      const params = new URLSearchParams();
+      if (partnerKeyword.trim()) params.set('partnerKeyword', partnerKeyword.trim());
+      if (programCategory !== 'ALL') params.set('category', programCategory);
+
+      fetch(`/api/joint-programs?${params.toString()}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('joint fetch error'))))
+        .then((data: JointProgramsApiResponse) => {
+          setJointPrograms(data.items);
+          setTotalJointCount(data.totalJointCount);
+          setSelectedJoint((prev) =>
+            prev && data.items.some((p) => p.id === prev.id)
+              ? data.items.find((p) => p.id === prev.id) ?? null
+              : data.items[0] ?? null
+          );
+        })
+        .catch((err) => {
+          if (err?.name !== 'AbortError') {
+            setJointPrograms([]);
+          }
+        })
+        .finally(() => setLoadingJoints(false));
+    }, partnerKeyword ? 120 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [partnerKeyword, programCategory]);
 
   const activeInstitute = useMemo(
-    () => filteredInstitutes.find((i) => i.id === selectedInstitute.id) ?? filteredInstitutes[0],
-    [filteredInstitutes, selectedInstitute.id]
-  );
-
-  const filteredJoints = useMemo(
-    () =>
-      filterJointPrograms(CAS_JOINT_PROGRAMS, {
-        partnerKeyword,
-        category: programCategory,
-      }),
-    [partnerKeyword, programCategory]
+    () => institutes.find((i) => i.id === selectedInstitute?.id) ?? institutes[0] ?? null,
+    [institutes, selectedInstitute]
   );
 
   const activeJoint = useMemo(
-    () => filteredJoints.find((p) => p.id === selectedJoint?.id) ?? filteredJoints[0] ?? null,
-    [filteredJoints, selectedJoint]
+    () => jointPrograms.find((p) => p.id === selectedJoint?.id) ?? jointPrograms[0] ?? null,
+    [jointPrograms, selectedJoint]
   );
 
   const regionCounts = useMemo(() => {
-    const beijing = CAS_INSTITUTES.filter((i) => i.region === RegionZone.BEIJING).length;
-    const shanghai = CAS_INSTITUTES.filter((i) => i.region === RegionZone.SHANGHAI).length;
-    return { beijing, shanghai, other: CAS_INSTITUTES.length - beijing - shanghai };
-  }, []);
+    const beijing = regionCountsMap[RegionZone.BEIJING] ?? 0;
+    const shanghai = regionCountsMap[RegionZone.SHANGHAI] ?? 0;
+    return {
+      beijing,
+      shanghai,
+      other: Math.max(0, totalInstitutes - beijing - shanghai),
+    };
+  }, [regionCountsMap, totalInstitutes]);
 
   return (
     <section aria-label="模块一：院所全景档案与联培专项" className="space-y-5">
@@ -91,7 +169,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
             院所全景档案
           </h2>
           <p className="mt-1 text-sm text-slate-600">
-            核查中科院 {CAS_INSTITUTES.length} 所生命科学培养单位的区域分布、报考难度五档定级、培养地点及优势学科。
+            核查中科院 {totalInstitutes} 所生命科学培养单位的区域分布、报考难度五档定级、培养地点及优势学科。
           </p>
         </div>
 
@@ -107,7 +185,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
                 : 'bg-white text-slate-700 hover:bg-slate-50'
             }`}
           >
-            院所基础档案 ({CAS_INSTITUTES.length})
+            院所基础档案 ({totalInstitutes})
           </button>
           <button
             type="button"
@@ -120,21 +198,20 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
                 : 'bg-white text-slate-700 hover:bg-slate-50'
             }`}
           >
-            联培专项雷达 ({CAS_JOINT_PROGRAMS.length})
+            联培专项雷达 ({totalJointCount})
           </button>
         </div>
       </div>
 
       {/* =================================================================
-          视图 A：院所基础档案（仅保留院所档案与固定建制统计）
+          视图 A：院所基础档案
          ================================================================= */}
       {subTab === 'institutes' && (
         <div className="space-y-4">
-          {/* 固定院所建制结构概览（无不固定名额与同卷平替） */}
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <div className="bg-[#00407A] p-4 text-white">
               <div className="text-xs text-sky-200">国科大生物及相关培养单位</div>
-              <div className="mt-1 font-mono text-2xl font-bold tabular-nums">{CAS_INSTITUTES.length} 所</div>
+              <div className="mt-1 font-mono text-2xl font-bold tabular-nums">{totalInstitutes} 所</div>
               <div className="mt-1 truncate text-xs text-sky-100/80">涵盖生科、农林、生态与医药</div>
             </div>
             <div className="border border-slate-200 bg-white p-4">
@@ -154,7 +231,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
             <div className="border border-slate-200 bg-white p-4">
               <div className="text-xs text-slate-500">京外其它片区研究所</div>
               <div className="mt-1 font-mono text-2xl font-bold text-slate-900 tabular-nums">
-                {regionCounts.other - 2} 所
+                {Math.max(0, regionCounts.other - 2)} 所
               </div>
               <div className="mt-1 truncate text-xs text-slate-600">覆盖广深、华东华中及西南西北</div>
             </div>
@@ -196,7 +273,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
                 ))}
               </div>
               <span className="font-mono text-xs text-slate-500 tabular-nums">
-                当前显示 {filteredInstitutes.length} / {CAS_INSTITUTES.length} 所
+                当前显示 {institutes.length} / {totalInstitutes} 所
               </span>
             </div>
 
@@ -216,7 +293,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
               {INSTITUTE_DIFFICULTY_TIERS.map((tier) => {
                 const meta = INSTITUTE_DIFFICULTY_META[tier];
                 const isActive = difficultyFilter === tier;
-                const tierCount = CAS_INSTITUTES.filter((i) => i.difficultyTier === tier).length;
+                const tierCount = tierCountsMap[tier];
                 return (
                   <button
                     key={tier}
@@ -228,14 +305,18 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
                         : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                     }`}
                   >
-                    {tier} ({tierCount})
+                    {tier}{tierCount !== undefined ? ` (${tierCount})` : ''}
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {filteredInstitutes.length === 0 ? (
+          {loadingInstitutes && institutes.length === 0 ? (
+            <div className="border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
+              正在从服务端检索培养单位档案...
+            </div>
+          ) : institutes.length === 0 ? (
             <div className="border border-slate-200 bg-white p-10 text-center">
               <p className="text-sm font-medium text-slate-700">未找到匹配当前筛选条件的研究所。</p>
               <button
@@ -254,7 +335,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
               {/* 左侧院所磁贴列表 */}
               <div className="lg:col-span-7 grid grid-cols-1 gap-3 sm:grid-cols-2 content-start max-h-[820px] overflow-y-auto pr-1">
-                {filteredInstitutes.map((inst) => {
+                {institutes.map((inst) => {
                   const isSelected = activeInstitute?.id === inst.id;
                   const tierMeta = INSTITUTE_DIFFICULTY_META[inst.difficultyTier];
                   return (
@@ -407,7 +488,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
       )}
 
       {/* =================================================================
-          视图 B：联培专项雷达（独立子页签，隐藏不固定招生名额）
+          视图 B：联培专项雷达
          ================================================================= */}
       {subTab === 'joint' && (
         <div className="space-y-4">
@@ -451,7 +532,11 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
             </div>
           </div>
 
-          {filteredJoints.length === 0 ? (
+          {loadingJoints && jointPrograms.length === 0 ? (
+            <div className="border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
+              正在加载联培专项计划...
+            </div>
+          ) : jointPrograms.length === 0 ? (
             <div className="border border-slate-200 bg-white p-10 text-center">
               <p className="text-sm text-slate-700">当前筛选条件下暂无匹配的联培或专项计划。</p>
               <button
@@ -468,7 +553,7 @@ export const Module1Panorama: React.FC<Module1PanoramaProps> = ({
           ) : (
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
               <div className="lg:col-span-7 space-y-3">
-                {filteredJoints.map((prog) => {
+                {jointPrograms.map((prog) => {
                   const isActive = activeJoint?.id === prog.id;
                   return (
                     <button

@@ -301,3 +301,91 @@ export interface UserTargetPlan {
   customGoalScore: number;
   selectedSubjectCodes: string[];
 }
+
+/** 公开线之上 4 个分段的展示 DTO（计算逻辑仅在服务端） */
+export interface ScoreZone {
+  zoneIndex: 1 | 2 | 3 | 4;
+  label: string;
+  startScore: number;
+  endScore: number | null;
+  isDanger: boolean;
+  barClass: string;
+  textClass: string;
+  description: string;
+}
+
+export interface ScoreSafetyMetrics {
+  prelimThreshold: number | null;
+  admittedMin: number | null;
+  admittedMedian: number | null;
+  admittedMax: number | null;
+  safeMarginOverThreshold: number | null;
+  recommendedSafeTarget: number | null;
+  hasScoreRange: boolean;
+  riskLevel: InstituteDifficultyTier | '暂无数据';
+  zoneTier: InstituteDifficultyTier;
+  scoreZones: ScoreZone[];
+  axisMin: number;
+  axisMax: number;
+}
+
+export interface ScoreEvaluationResult {
+  status: 'below' | 'zone1' | 'zone2' | 'zone3' | 'zone4';
+  label: string;
+  detail: string;
+  textClass: string;
+}
+
+export interface RiskRecordPageItem {
+  record: AdmissionRiskRecord;
+  region: RegionZone | null;
+  difficultyTier: InstituteDifficultyTier;
+  metrics: ScoreSafetyMetrics;
+  scoreEval: ScoreEvaluationResult | null;
+}
+
+/** 前端可见的三级树展示节点（已剥离匹配规则与语料库关键词） */
+export interface PublicSubSpecialtyNode {
+  id: string;
+  name: string;
+  summary: string;
+  keyMethods: string[];
+}
+
+export interface PublicResearchDirectionNode {
+  id: string;
+  name: string;
+  summary: string;
+  subSpecialties: PublicSubSpecialtyNode[];
+}
+
+export interface PublicBiologyDomainNode {
+  id: string;
+  name: string;
+  badge: string;
+  subtitle: string;
+  directions: PublicResearchDirectionNode[];
+}
+
+export interface DirectionOptionSummary {
+  id: string;
+  instituteId: string;
+  instituteName: string;
+  majorCode: string;
+  majorName: string;
+  directionName: string;
+  subject3Code: string;
+  subject3Name: string;
+  subject4Code: string;
+  subject4Name: string;
+}
+
+export interface WhitepaperContextResponse {
+  institute: CasInstitute;
+  direction: AdmissionDirection;
+  riskRecord: AdmissionRiskRecord | null;
+  resources: SubjectPrepResource[];
+  safetyMetrics: ScoreSafetyMetrics | null;
+  goalZoneEval: ScoreEvaluationResult | null;
+}
+
